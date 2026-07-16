@@ -1,0 +1,14 @@
+.venv
+.git
+.chrome-*
+.edge-*
+__pycache__
+*.pyc
+*.pyo
+*.log
+*.png
+build
+dist
+outputs
+smoke-test-output
+tests

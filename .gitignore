@@ -1,0 +1,36 @@
+# Python environments and caches
+.venv/
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Local secrets and environment overrides
+.env
+.env.*
+!.env.example
+
+# Build and packaging output
+build/
+dist/
+
+# Runtime output and local browser profiles
+outputs/
+smoke-test-output/
+.chrome-*/
+.edge-*/
+*.log
+
+# Local QA screenshots at the repository root
+/*.png
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+

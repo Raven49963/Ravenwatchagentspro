@@ -1,0 +1,688 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>TradingAgents Pro 研投终端</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/raven-mark.svg">
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+<div id="trading-terminal" data-market="a-share">
+  <aside class="sidebar" aria-label="主导航">
+    <div class="brand-block">
+      <div class="brand-mark" aria-hidden="true">
+        <img src="/assets/raven-mark.svg" alt="">
+      </div>
+      <div class="brand-copy">
+        <strong>TradingAgents</strong>
+        <span>PRO 研投终端</span>
+      </div>
+    </div>
+
+    <nav class="primary-nav">
+      <button class="nav-item is-active" type="button" title="市场总览">
+        <i data-lucide="layout-dashboard"></i><span>市场总览</span>
+      </button>
+      <button class="nav-item" type="button" title="实时行情">
+        <i data-lucide="chart-candlestick"></i><span>实时行情</span>
+      </button>
+      <button class="nav-item" type="button" title="因子研究">
+        <i data-lucide="scan-search"></i><span>因子研究</span>
+      </button>
+      <button class="nav-item" type="button" title="策略实验室">
+        <i data-lucide="flask-conical"></i><span>策略实验室</span>
+      </button>
+      <button class="nav-item" type="button" title="智能体研判">
+        <i data-lucide="network"></i><span>智能体研判</span>
+      </button>
+      <button class="nav-item" type="button" title="组合与风控">
+        <i data-lucide="shield-check"></i><span>组合与风控</span>
+      </button>
+    </nav>
+
+    <div class="connection-block">
+      <div class="connection-line">
+        <span>数据连接</span>
+        <span class="status-live"><b></b><span id="sidebar-connection">连接中</span></span>
+      </div>
+      <strong>A股 · 美股 · 港股 · 全球 ETF</strong>
+      <span id="sidebar-provider">等待数据源</span>
+      <small>v1.6 local evidence</small>
+    </div>
+  </aside>
+
+  <div class="terminal-shell">
+    <header class="topbar">
+      <div class="workspace-title">
+        <strong>专业研投工作台</strong>
+        <span>实时行情 · 因子研究 · 策略融合</span>
+      </div>
+
+      <div class="market-control segmented-control" aria-label="市场">
+        <button type="button" class="is-selected" data-market="a-share">A 股</button>
+        <button type="button" data-market="nasdaq">美 股</button>
+        <button type="button" data-market="hk">港 股</button>
+        <button type="button" data-market="global">全 球</button>
+      </div>
+
+      <div class="symbol-search">
+        <div class="symbol-control">
+          <i data-lucide="search"></i>
+          <input id="symbol-input" list="symbol-options" type="text" aria-label="搜索证券代码或名称" placeholder="代码 / 名称" autocomplete="off" spellcheck="false">
+          <datalist id="symbol-options"></datalist>
+          <button id="open-catalog-button" class="catalog-trigger" type="button" title="浏览证券库" aria-label="浏览证券库">
+            <i data-lucide="database"></i>
+          </button>
+        </div>
+        <div id="instrument-results" class="instrument-results is-hidden" role="listbox" aria-label="证券搜索结果"></div>
+      </div>
+
+      <label class="asset-control" title="筛选资产类型">
+        <i data-lucide="layers-3"></i>
+        <select id="asset-type-select" aria-label="资产类型">
+          <option value="all">全部资产</option>
+          <option value="stock">股票</option>
+          <option value="etf">ETF</option>
+          <option value="index">指数</option>
+          <option value="fund">基金</option>
+          <option value="reit">REIT</option>
+        </select>
+      </label>
+
+      <label class="period-control">
+        <span>周期</span>
+        <select id="period-select" aria-label="K线周期">
+          <option value="3m">3个月</option>
+          <option value="6m">6个月</option>
+          <option value="1y" selected>1年</option>
+          <option value="3y">3年</option>
+          <option value="5y">5年</option>
+        </select>
+      </label>
+
+      <button id="refresh-button" class="icon-button" type="button" title="刷新行情">
+        <i data-lucide="refresh-cw"></i>
+      </button>
+      <button id="run-agents-button" class="primary-button" type="button">
+        <i data-lucide="play"></i><span>开始研判</span>
+      </button>
+    </header>
+
+    <section class="market-tape" aria-label="当前行情摘要">
+      <div><span>开盘</span><strong id="tape-open">--</strong></div>
+      <div><span>最高</span><strong id="tape-high">--</strong></div>
+      <div><span>最低</span><strong id="tape-low">--</strong></div>
+      <div><span>成交量</span><strong id="tape-volume">--</strong></div>
+      <div><span>成交额</span><strong id="tape-amount">--</strong></div>
+      <div><span>数据源</span><a id="tape-provider" class="tape-source" target="_blank" rel="noopener noreferrer">--</a></div>
+      <div><span>更新时间</span><strong id="tape-time">--</strong></div>
+    </section>
+
+    <main class="workspace" aria-busy="true">
+      <section class="panel market-panel">
+        <div class="panel-header market-header">
+          <div class="quote-heading">
+            <div>
+              <strong id="quote-name">加载中</strong>
+              <span id="quote-symbol">--</span>
+              <span id="quote-market-meta" class="quote-market-meta">--</span>
+            </div>
+            <div class="quote-price-row">
+              <strong id="quote-price">--</strong>
+              <span id="quote-change">--</span>
+            </div>
+          </div>
+
+          <div class="market-header-actions">
+            <span id="data-quality-badge" class="data-quality-badge">样本检查中</span>
+            <span id="quote-freshness" class="data-freshness">等待行情</span>
+            <div class="chart-tabs segmented-control" role="tablist" aria-label="行情图表">
+              <button type="button" class="is-selected" data-chart="kline" role="tab">K 线</button>
+              <button type="button" data-chart="intraday" role="tab">分 时</button>
+            </div>
+          </div>
+        </div>
+        <div id="kline-chart" class="chart chart-main" aria-label="K线图"></div>
+        <div id="intraday-chart" class="chart chart-main is-hidden" aria-label="分时图"></div>
+        <div id="chart-empty" class="empty-state is-hidden">行情图表暂不可用</div>
+      </section>
+
+      <aside class="panel decision-panel">
+        <div class="panel-header">
+          <div>
+            <span class="eyebrow">组合研判</span>
+            <strong>策略共识</strong>
+          </div>
+          <span id="regime-badge" class="status-badge">计算中</span>
+        </div>
+
+        <div class="decision-hero">
+          <div class="score-ring" aria-label="综合得分">
+            <svg viewBox="0 0 120 120" aria-hidden="true">
+              <circle class="ring-track" cx="60" cy="60" r="50"></circle>
+              <circle id="score-ring-value" class="ring-value" cx="60" cy="60" r="50"></circle>
+            </svg>
+            <div><strong id="decision-score">--</strong><span>/ 100</span></div>
+          </div>
+          <div class="decision-copy">
+            <span>综合观点</span>
+            <strong id="decision-label">分析中</strong>
+            <p id="decision-summary">正在汇总多因子与策略结果。</p>
+          </div>
+        </div>
+
+        <div class="decision-metrics">
+          <div><span>置信度</span><strong id="decision-confidence">--</strong></div>
+          <div><span>目标仓位</span><strong id="decision-position">--</strong></div>
+          <div><span>风险等级</span><strong id="decision-risk">--</strong></div>
+        </div>
+
+        <div class="risk-levels">
+          <div><span>止损参考</span><strong id="decision-stop">--</strong></div>
+          <div><span>止盈参考</span><strong id="decision-take">--</strong></div>
+        </div>
+
+        <div class="regime-block">
+          <div><span>市场状态</span><strong id="regime-name">--</strong></div>
+          <p id="regime-description">--</p>
+        </div>
+
+        <button id="agent-decision" class="agent-decision" type="button" title="查看最近一次智能体报告">
+          <i data-lucide="network"></i>
+          <span>等待智能体研判</span>
+        </button>
+      </aside>
+
+      <section class="panel factor-panel">
+        <div class="panel-header">
+          <div>
+            <span class="eyebrow">Factor Lab</span>
+            <strong>多因子矩阵</strong>
+          </div>
+          <span id="factor-count" class="panel-meta">--</span>
+        </div>
+        <div class="factor-content">
+          <div id="factor-list" class="factor-list"></div>
+          <div id="factor-heatmap" class="chart factor-heatmap" aria-label="因子历史热力图"></div>
+        </div>
+      </section>
+
+      <section class="panel strategy-panel">
+        <div class="panel-header">
+          <div>
+            <span class="eyebrow">Strategy Ensemble</span>
+            <strong>策略投票</strong>
+          </div>
+          <span id="strategy-regime" class="panel-meta">动态权重</span>
+        </div>
+        <div id="strategy-list" class="strategy-list"></div>
+      </section>
+
+      <section class="panel validation-panel">
+        <div class="panel-header">
+          <div>
+            <span class="eyebrow">Walk-Forward Lab</span>
+            <strong>滚动样本外验证</strong>
+          </div>
+          <div class="validation-header-actions">
+            <span id="validation-profile" class="panel-meta">等待模型</span>
+            <span id="validation-badge" class="status-badge">计算中</span>
+            <button id="open-quant-settings-button" class="icon-button" type="button" title="量化验证参数">
+              <i data-lucide="sliders-horizontal"></i>
+            </button>
+          </div>
+        </div>
+        <div class="validation-metrics">
+          <div><span>样本外收益</span><strong id="validation-return">--</strong></div>
+          <div><span>相对基准</span><strong id="validation-excess">--</strong></div>
+          <div><span>最大回撤</span><strong id="validation-drawdown">--</strong></div>
+          <div><span>Sharpe 置信度</span><strong id="validation-psr">--</strong></div>
+          <div><span>63日亏损概率</span><strong id="validation-loss-risk">--</strong></div>
+          <div><span>模型目标仓位</span><strong id="validation-position">--</strong></div>
+        </div>
+        <div class="validation-content">
+          <div id="validation-chart" class="chart validation-chart" aria-label="样本外净值曲线"></div>
+          <div class="validation-detail">
+            <p id="validation-summary" class="validation-summary">正在计算滚动样本外结果。</p>
+            <div class="table-wrap validation-table-wrap">
+              <table class="validation-table">
+                <thead>
+                  <tr><th>测试区间</th><th>画像</th><th>策略</th><th>基准</th><th>超额</th></tr>
+                </thead>
+                <tbody id="validation-fold-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel evidence-panel">
+        <div class="panel-header">
+          <div>
+            <span class="eyebrow">Local Evidence</span>
+            <strong>本地证据与基本面</strong>
+          </div>
+          <div class="evidence-header-actions">
+            <span id="evidence-meta" class="panel-meta">等待证据</span>
+            <span id="evidence-badge" class="status-badge">计算中</span>
+          </div>
+        </div>
+        <div class="evidence-content">
+          <div class="evidence-overview">
+            <span>综合证据分</span>
+            <strong id="evidence-score">--</strong>
+            <b id="evidence-label">等待在线证据</b>
+            <div class="evidence-coverage">
+              <span>可信度 <strong id="evidence-confidence">--</strong></span>
+              <span>覆盖率 <strong id="evidence-coverage">--</strong></span>
+            </div>
+            <p id="evidence-summary">正在汇总技术、样本外、基本面与新闻证据。</p>
+          </div>
+          <div class="evidence-components">
+            <div class="evidence-subheading"><strong>证据构成</strong><span>可靠度加权</span></div>
+            <div id="evidence-component-list" class="evidence-component-list" aria-live="polite"></div>
+          </div>
+          <div class="fundamental-snapshot">
+            <div class="evidence-subheading"><strong>基本面快照</strong><span id="fundamental-meta">等待数据</span></div>
+            <div id="fundamental-metrics" class="fundamental-metrics" aria-live="polite"></div>
+          </div>
+        </div>
+        <div class="evidence-event-band">
+          <div><span>正面事件</span><strong id="news-positive-count">--</strong></div>
+          <div><span>负面事件</span><strong id="news-negative-count">--</strong></div>
+          <div><span>中性事件</span><strong id="news-neutral-count">--</strong></div>
+          <div class="evidence-event-line"><span>主要催化</span><strong id="news-top-catalyst">--</strong></div>
+          <div class="evidence-event-line"><span>主要风险</span><strong id="news-top-risk">--</strong></div>
+        </div>
+        <div id="fundamental-source-status" class="fundamental-source-status" aria-live="polite">
+          <span class="fundamental-provider is-loading"><b></b>正在连接基本面数据源</span>
+        </div>
+      </section>
+
+      <section class="panel news-panel">
+        <div class="panel-header">
+          <div>
+            <span class="eyebrow">Live Evidence</span>
+            <strong>在线新闻与公告</strong>
+          </div>
+          <div class="news-header-actions">
+            <span id="news-meta" class="panel-meta">等待在线源</span>
+            <button id="refresh-news-button" class="icon-button" type="button" title="刷新新闻与基本面">
+              <i data-lucide="refresh-cw"></i>
+            </button>
+          </div>
+        </div>
+        <div id="news-source-status" class="news-source-status" aria-live="polite">
+          <span class="news-provider is-loading"><b></b>正在连接新闻源</span>
+        </div>
+        <div id="news-list" class="news-list" aria-live="polite">
+          <div class="news-empty">等待当前标的的在线新闻</div>
+        </div>
+      </section>
+
+      <section class="panel mining-panel">
+        <div class="panel-header">
+          <div>
+            <span class="eyebrow">Factor Mining</span>
+            <strong>因子有效性</strong>
+          </div>
+          <span id="mining-count" class="panel-meta">5日前瞻</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>因子</th><th>IC</th><th>t 值</th><th>胜率</th><th>样本</th></tr>
+            </thead>
+            <tbody id="mining-table-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <footer class="statusbar">
+      <span id="status-message"><b></b> 正在连接行情服务</span>
+      <span id="status-detail">--</span>
+      <span class="disclaimer">研究结果不构成收益承诺</span>
+    </footer>
+  </div>
+
+  <dialog id="instrument-catalog-dialog" class="instrument-catalog-dialog">
+    <div class="dialog-header catalog-dialog-header">
+      <div>
+        <span class="eyebrow">Instrument Universe</span>
+        <strong>证券库</strong>
+        <span id="catalog-header-count" class="catalog-header-count">正在读取目录</span>
+      </div>
+      <div class="dialog-header-actions">
+        <button id="refresh-catalog-button" class="icon-button" type="button" title="更新在线目录">
+          <i data-lucide="refresh-cw"></i>
+        </button>
+        <button id="close-catalog-button" class="icon-button" type="button" title="关闭">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+    </div>
+
+    <div class="catalog-toolbar">
+      <div class="catalog-market-control segmented-control" aria-label="证券库市场">
+        <button type="button" class="is-selected" data-catalog-market="a-share">A 股</button>
+        <button type="button" data-catalog-market="nasdaq">美股</button>
+        <button type="button" data-catalog-market="hk">港股</button>
+        <button type="button" data-catalog-market="global">全球</button>
+      </div>
+      <label class="catalog-search-control">
+        <i data-lucide="search"></i>
+        <input id="catalog-query-input" type="search" aria-label="筛选证券库" placeholder="代码、名称或板块" autocomplete="off" spellcheck="false">
+      </label>
+      <label class="catalog-select-control">
+        <i data-lucide="layers-3"></i>
+        <select id="catalog-asset-select" aria-label="证券库资产类型">
+          <option value="all">全部资产</option>
+          <option value="stock">股票</option>
+          <option value="etf">ETF</option>
+          <option value="reit">REIT</option>
+          <option value="fund">基金</option>
+          <option value="index">指数</option>
+        </select>
+      </label>
+      <label class="catalog-select-control catalog-category-control">
+        <i data-lucide="list-filter"></i>
+        <select id="catalog-category-select" aria-label="证券库板块分类">
+          <option value="all">全部板块</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="catalog-source-bar">
+      <span id="catalog-result-summary">--</span>
+      <a id="catalog-source-link" target="_blank" rel="noopener noreferrer">--</a>
+      <span id="catalog-updated-at">--</span>
+    </div>
+
+    <div class="catalog-table-wrap">
+      <table class="catalog-table">
+        <thead>
+          <tr><th>代码 / 名称</th><th>交易所</th><th>类型</th><th>板块</th><th aria-label="选择"></th></tr>
+        </thead>
+        <tbody id="catalog-table-body"></tbody>
+      </table>
+      <div id="catalog-empty" class="catalog-empty is-hidden">当前筛选没有匹配证券</div>
+    </div>
+
+    <div class="catalog-pagination">
+      <span id="catalog-page-status">第 1 / 1 页</span>
+      <div>
+        <button id="catalog-previous-button" class="icon-button" type="button" title="上一页">
+          <i data-lucide="chevron-left"></i>
+        </button>
+        <button id="catalog-next-button" class="icon-button" type="button" title="下一页">
+          <i data-lucide="chevron-right"></i>
+        </button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="quant-settings-dialog" class="quant-settings-dialog">
+    <div class="dialog-header">
+      <div><span class="eyebrow">Validation Parameters</span><strong>量化验证参数</strong></div>
+      <button id="close-quant-settings-button" class="icon-button" type="button" title="关闭">
+        <i data-lucide="x"></i>
+      </button>
+    </div>
+    <form id="quant-settings-form" class="quant-settings-form">
+      <div class="quant-target-bar">
+        <div><span>研究标的</span><strong id="quant-settings-target">--</strong></div>
+        <div><span>历史区间</span><strong id="quant-settings-period">--</strong></div>
+        <div><span>执行时点</span><strong>次日执行</strong></div>
+      </div>
+
+      <section class="quant-settings-section">
+        <div class="settings-heading">
+          <div><span class="settings-index">01</span><strong>滚动窗口</strong></div>
+          <span class="settings-meta">严格样本外</span>
+        </div>
+        <div class="quant-field-grid">
+          <label class="settings-field">
+            <span>训练窗口</span>
+            <select id="quant-train-rows">
+              <option value="0" selected>自动</option>
+              <option value="126">126 日</option>
+              <option value="252">252 日</option>
+              <option value="378">378 日</option>
+            </select>
+          </label>
+          <label class="settings-field">
+            <span>测试窗口</span>
+            <select id="quant-test-rows">
+              <option value="0" selected>自动</option>
+              <option value="21">21 日</option>
+              <option value="42">42 日</option>
+              <option value="63">63 日</option>
+              <option value="126">126 日</option>
+            </select>
+          </label>
+          <label class="settings-field quant-position-field">
+            <span>仓位上限 <output id="quant-position-output">100%</output></span>
+            <input id="quant-position-input" type="range" min="5" max="100" step="5" value="100">
+          </label>
+        </div>
+      </section>
+
+      <section class="quant-settings-section">
+        <div class="settings-heading">
+          <div><span class="settings-index">02</span><strong>交易摩擦</strong></div>
+          <span class="settings-meta">单边基点</span>
+        </div>
+        <div class="quant-field-grid quant-cost-grid">
+          <label class="settings-field">
+            <span>佣金 bps</span>
+            <input id="quant-commission-input" type="number" min="0" max="100" step="0.1" value="3">
+          </label>
+          <label class="settings-field">
+            <span>滑点 bps</span>
+            <input id="quant-slippage-input" type="number" min="0" max="100" step="0.1" value="2">
+          </label>
+          <label class="settings-field">
+            <span>压力倍数</span>
+            <input id="quant-stress-input" type="number" min="1" max="5" step="0.5" value="2">
+          </label>
+        </div>
+      </section>
+
+      <section class="quant-settings-section">
+        <div class="settings-heading">
+          <div><span class="settings-index">03</span><strong>风险重采样</strong></div>
+          <span class="settings-meta">Stationary Bootstrap</span>
+        </div>
+        <div class="quant-field-grid quant-bootstrap-grid">
+          <label class="settings-field">
+            <span>风险期限</span>
+            <select id="quant-horizon-select">
+              <option value="21">21 日</option>
+              <option value="42">42 日</option>
+              <option value="63" selected>63 日</option>
+              <option value="126">126 日</option>
+              <option value="252">252 日</option>
+            </select>
+          </label>
+          <label class="settings-field">
+            <span>模拟次数</span>
+            <select id="quant-simulations-select">
+              <option value="500">500</option>
+              <option value="1000" selected>1,000</option>
+              <option value="2000">2,000</option>
+              <option value="5000">5,000</option>
+            </select>
+          </label>
+          <label class="settings-field">
+            <span>平均区块</span>
+            <input id="quant-block-input" type="number" min="1" max="63" step="1" value="5">
+          </label>
+          <label class="settings-field">
+            <span>随机种子</span>
+            <input id="quant-seed-input" type="number" min="0" max="2147483647" step="1" value="7">
+          </label>
+        </div>
+      </section>
+
+      <div class="dialog-actions quant-dialog-actions">
+        <span id="quant-settings-status" class="dialog-status">当前使用自适应窗口</span>
+        <button id="reset-quant-settings-button" class="secondary-button" type="button">恢复默认</button>
+        <button class="primary-button" type="submit"><i data-lucide="play"></i><span>重新验证</span></button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="agent-settings-dialog" class="agent-settings-dialog">
+    <div class="dialog-header">
+      <div><span class="eyebrow">Agent Orchestration</span><strong>智能体编排</strong></div>
+      <button id="close-settings-button" class="icon-button" type="button" title="关闭">
+        <i data-lucide="x"></i>
+      </button>
+    </div>
+    <form id="agent-settings-form" class="agent-settings-form">
+      <div class="research-target-bar">
+        <div><span>研究标的</span><strong id="settings-target">--</strong></div>
+        <div><span>数据市场</span><strong id="settings-market">--</strong></div>
+        <div><span>智能体规模</span><strong id="settings-agent-count">12 个角色</strong></div>
+      </div>
+
+      <section class="settings-section mode-section" aria-labelledby="mode-heading">
+        <div class="settings-heading">
+          <div><span class="settings-index">01</span><strong id="mode-heading">推理模式</strong></div>
+          <div class="segmented-control agent-mode-control" aria-label="推理模式">
+            <button type="button" class="is-selected" data-agent-mode="offline">离线规则</button>
+            <button type="button" data-agent-mode="online">在线模型</button>
+          </div>
+        </div>
+
+        <div id="online-model-settings" class="online-model-settings is-hidden">
+          <label class="settings-field">
+            <span>模型服务</span>
+            <select id="provider-select" aria-label="模型服务"></select>
+          </label>
+          <label class="settings-field settings-field-wide">
+            <span>模型 ID</span>
+            <input id="model-input" type="text" maxlength="160" placeholder="填写模型 ID" autocomplete="off" spellcheck="false">
+          </label>
+          <label class="settings-field settings-field-endpoint">
+            <span>兼容接口</span>
+            <input id="provider-endpoint" type="text" readonly aria-label="模型接口地址">
+          </label>
+          <label class="settings-field settings-field-key">
+            <span id="api-key-label">API Key</span>
+            <span class="secret-input">
+              <input id="api-key-input" type="password" maxlength="512" placeholder="仅用于本次任务" autocomplete="new-password" spellcheck="false">
+              <button id="toggle-api-key" class="input-icon-button" type="button" title="显示或隐藏 API Key">
+                <i data-lucide="eye"></i>
+              </button>
+            </span>
+          </label>
+          <label class="settings-field temperature-field">
+            <span>温度 <output id="temperature-output">0.2</output></span>
+            <input id="temperature-input" type="range" min="0" max="1" step="0.1" value="0.2">
+          </label>
+          <label class="settings-field timeout-field">
+            <span>单次超时</span>
+            <select id="timeout-select">
+              <option value="30">30 秒</option>
+              <option value="60" selected>60 秒</option>
+              <option value="120">120 秒</option>
+              <option value="180">180 秒</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <section class="settings-section" aria-labelledby="analyst-heading">
+        <div class="settings-heading">
+          <div><span class="settings-index">02</span><strong id="analyst-heading">分析师团队</strong></div>
+          <span id="analyst-selection-count" class="settings-meta">已选择 4 / 4</span>
+        </div>
+        <div class="analyst-options">
+          <label><input type="checkbox" name="analyst" value="market" checked><span><i data-lucide="chart-no-axes-combined"></i><b>技术分析师</b><small>趋势、动量与波动</small></span></label>
+          <label><input type="checkbox" name="analyst" value="sentiment" checked><span><i data-lucide="messages-square"></i><b>情绪分析师</b><small>市场情绪与预期</small></span></label>
+          <label><input type="checkbox" name="analyst" value="news" checked><span><i data-lucide="newspaper"></i><b>新闻分析师</b><small>事件、行业与宏观</small></span></label>
+          <label><input type="checkbox" name="analyst" value="fundamentals" checked><span><i data-lucide="landmark"></i><b>基本面分析师</b><small>估值、增长与杠杆</small></span></label>
+        </div>
+      </section>
+
+      <section class="settings-section execution-section" aria-labelledby="execution-heading">
+        <div class="settings-heading">
+          <div><span class="settings-index">03</span><strong id="execution-heading">执行参数</strong></div>
+          <span class="settings-meta">多空研究与风险合议</span>
+        </div>
+        <div class="execution-options">
+          <label class="settings-field">
+            <span>多空辩论</span>
+            <select id="debate-rounds-select">
+              <option value="1" selected>1 轮</option>
+              <option value="2">2 轮</option>
+              <option value="3">3 轮</option>
+            </select>
+          </label>
+          <label class="settings-field">
+            <span>风险合议</span>
+            <select id="risk-rounds-select">
+              <option value="1" selected>1 轮</option>
+              <option value="2">2 轮</option>
+              <option value="3">3 轮</option>
+            </select>
+          </label>
+          <label class="switch-row">
+            <span><b>新闻与基本面补充</b><small>从可用在线数据源获取</small></span>
+            <input id="fetch-details-input" type="checkbox"><i aria-hidden="true"></i>
+          </label>
+          <label id="fallback-setting" class="switch-row is-disabled">
+            <span><b>失败时离线回退</b><small>单个角色失败不终止团队</small></span>
+            <input id="fallback-input" type="checkbox" checked disabled><i aria-hidden="true"></i>
+          </label>
+        </div>
+      </section>
+
+      <div class="dialog-actions">
+        <span id="provider-key-status" class="dialog-status"><i data-lucide="shield-check"></i> 离线规则无需密钥</span>
+        <button id="cancel-settings-button" class="secondary-button" type="button">取消</button>
+        <button id="start-research-button" class="primary-button" type="submit">
+          <i data-lucide="play"></i><span>启动 12 个角色</span>
+        </button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="reports-dialog" class="reports-dialog">
+    <div class="dialog-header reports-header">
+      <div>
+        <span class="eyebrow">TradingAgents Pipeline</span>
+        <strong>智能体研究报告</strong>
+        <span class="report-run-meta"><b id="report-mode-badge" class="mode-badge">离线规则</b><span id="report-progress-text">等待任务</span></span>
+      </div>
+      <div class="dialog-header-actions">
+        <button id="cancel-job-button" class="secondary-button danger-button is-hidden" type="button">
+          <i data-lucide="square"></i><span>取消任务</span>
+        </button>
+        <button id="close-dialog-button" class="icon-button" type="button" title="关闭">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+    </div>
+    <div class="research-progress-track" aria-hidden="true"><span id="research-progress-bar"></span></div>
+    <div class="dialog-body">
+      <nav id="report-tabs" class="report-tabs" aria-label="报告列表"></nav>
+      <section class="report-view">
+        <div id="report-result-meta" class="report-result-meta"><span>研究流水线尚未启动</span></div>
+        <pre id="report-content" class="report-content">配置智能体后开始研判。</pre>
+      </section>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</div>
+
+<script src="/assets/vendor/echarts.min.js"></script>
+<script src="/assets/vendor/lucide.min.js"></script>
+<script src="/assets/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+pandas>=2.2,<3
+numpy>=1.26,<3
+matplotlib>=3.8,<4
+yfinance>=0.2.54,<2
+akshare>=1.17,<2
+fastapi>=0.139,<1
+uvicorn>=0.34,<1
+pyinstaller>=6.10,<7
