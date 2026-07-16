@@ -43,6 +43,7 @@
     newsRequestId: 0,
     newsKey: "",
     newsData: null,
+    newsFilter: "all",
     evidenceData: null,
     quantConfig: {
       train_rows: 0,
@@ -934,6 +935,7 @@
 
       const values = [
         safeNumber(item.information_coefficient).toFixed(3),
+        `${safeNumber(item.stability_score).toFixed(0)}%`,
         safeNumber(item.t_statistic).toFixed(2),
         formatPercent(item.directional_win_rate, 1),
         String(item.observations),
@@ -987,9 +989,18 @@
   function renderFundamentals(snapshot, assessment) {
     const metrics = assessment?.metrics || [];
     const reportDate = assessment?.report_date || "报告期未知";
+    const dataQuality = safeNumber(assessment?.data_quality, NaN);
+    const agreement = safeNumber(assessment?.cross_source_agreement, NaN);
     byId("fundamental-meta").textContent = assessment?.available
       ? `${assessment.company || state.symbol} · ${safeNumber(assessment.available_metrics)} / ${safeNumber(assessment.total_metrics)} · ${reportDate}`
       : "数据覆盖不足";
+    byId("fundamental-quality").textContent = Number.isFinite(dataQuality)
+      ? `${assessment?.data_quality_label || "待核"} ${dataQuality.toFixed(0)}`
+      : "--";
+    byId("fundamental-agreement").textContent = Number.isFinite(agreement)
+      ? formatPercent(agreement, 0)
+      : "--";
+    byId("fundamental-verified").textContent = `${safeNumber(assessment?.verified_metric_count)} 项`;
     const container = byId("fundamental-metrics");
     container.replaceChildren();
     metrics.forEach((metric) => {
@@ -1002,7 +1013,18 @@
       if (metric.tone === "positive") value.className = "is-positive";
       if (metric.tone === "negative") value.className = "is-negative";
       const source = document.createElement("small");
-      source.textContent = metric.source || "暂无可用字段";
+      const sourceCount = safeNumber(metric.source_count);
+      const sourceEvidence = sourceCount >= 2
+        ? `${sourceCount} 源 · 一致 ${formatPercent(metric.agreement, 0)}`
+        : metric.available
+          ? "单源待核"
+          : "";
+      source.textContent = [metric.source, sourceEvidence, metric.available ? `Q${safeNumber(metric.quality_score).toFixed(0)}` : ""]
+        .filter(Boolean)
+        .join(" · ") || "暂无可用字段";
+      item.title = metric.available
+        ? `${metric.label} · ${source.textContent}`
+        : `${metric.label} · 数据暂不可用`;
       item.append(label, value, source);
       container.append(item);
     });
@@ -1036,7 +1058,7 @@
     byId("evidence-summary").textContent = local.summary || "本地证据暂不可用。";
     const fundamentalProviders = payload.fundamentals?.providers || [];
     const providerCount = fundamentalProviders.filter((provider) => provider.status === "ok").length;
-    byId("evidence-meta").textContent = `${providerCount} 个基本面源 · ${safeNumber(news.article_count)} 条事件`;
+    byId("evidence-meta").textContent = `${fundamentals.data_quality_label || `${providerCount} 个基本面源`} · ${safeNumber(fundamentals.verified_metric_count)} 项跨源 · ${safeNumber(news.five_source_verified_count)} 条五源事件`;
 
     const componentList = byId("evidence-component-list");
     componentList.replaceChildren();
@@ -1199,20 +1221,89 @@
     }
   }
 
-  function renderNews(payload) {
-    state.newsData = payload;
-    const items = (payload.items || [])
-      .map((item) => ({ ...item, safeUrl: safeExternalUrl(item.url) }))
-      .filter((item) => item.safeUrl);
-    byId("news-meta").textContent = `${items.length} 条 · ${formatNewsTime(payload.fetched_at)}`;
-    renderNewsProviders(payload.providers || [], payload.warnings || [], payload.source_portals || []);
+  const newsCategoryLabels = {
+    results: "业绩",
+    guidance: "业绩指引",
+    "capital-return": "股东回报",
+    financing: "融资",
+    transaction: "并购交易",
+    "product-contract": "产品与合同",
+    "regulatory-risk": "监管与诉讼",
+    management: "管理层",
+    "analyst-rating": "机构评级",
+    "company-update": "公司动态",
+  };
+
+  function normalizedNewsItems(payload) {
+    return (payload?.items || []).map((item) => {
+      const fallbackSource = {
+        source_id: item.publisher || item.provider || "source",
+        title: item.title,
+        publisher: item.publisher || "来源未知",
+        published_at: item.published_at,
+        url: item.url,
+        provider: item.provider,
+        provider_label: item.provider_label,
+        source_kind: item.source_kind,
+        credibility: item.credibility,
+        official: ["filing", "exchange"].includes(item.source_kind),
+      };
+      const sources = (item.corroborating_sources?.length ? item.corroborating_sources : [fallbackSource])
+        .map((source) => ({ ...source, safeUrl: safeExternalUrl(source.url) }))
+        .filter((source) => source.safeUrl);
+      const safeUrl = safeExternalUrl(item.url) || sources[0]?.safeUrl || "";
+      const sourceCount = Math.max(1, safeNumber(item.verification_count) || sources.length);
+      let status = item.verification_status || "single-source";
+      if (sourceCount >= 5) status = "five-source";
+      else if (safeNumber(item.official_source_count) > 0 || sources.some((source) => source.official)) status = "official-primary";
+      else if (sourceCount >= 2) status = "corroborated";
+      return { ...item, safeUrl, sources, sourceCount, verificationStatus: status };
+    }).filter((item) => item.safeUrl);
+  }
+
+  function newsMatchesFilter(item) {
+    if (state.newsFilter === "verified") return item.verificationStatus === "five-source";
+    if (state.newsFilter === "official") {
+      return safeNumber(item.official_source_count) > 0 || item.sources.some((source) => source.official);
+    }
+    return true;
+  }
+
+  function verificationBadge(item) {
+    const badge = document.createElement("span");
+    badge.className = `news-verification-badge is-${item.verificationStatus}`;
+    const required = 5;
+    const labels = {
+      "five-source": `${item.sourceCount} 源验证`,
+      "official-primary": `官方原文 · ${Math.min(item.sourceCount, required)}/${required}`,
+      corroborated: `${item.sourceCount}/${required} 源交叉`,
+      "single-source": `1/${required} 待核`,
+    };
+    badge.textContent = labels[item.verificationStatus] || labels["single-source"];
+    return badge;
+  }
+
+  function renderNewsItems(payload) {
+    const allItems = normalizedNewsItems(payload);
+    const items = allItems.filter(newsMatchesFilter);
+    const verification = payload?.verification || {};
+    const verifiedCount = safeNumber(verification.five_source_verified_count)
+      || allItems.filter((item) => item.verificationStatus === "five-source").length;
+    const officialCount = safeNumber(verification.official_primary_count)
+      || allItems.filter((item) => safeNumber(item.official_source_count) > 0).length;
+    byId("news-meta").textContent = `${items.length}/${allItems.length} 事件 · ${formatNewsTime(payload?.fetched_at)}`;
+    byId("news-verification-summary").textContent = `五源验证 ${verifiedCount} · 含官方原文 ${officialCount} · 独立来源 ${safeNumber(verification.independent_source_count)}`;
 
     const container = byId("news-list");
     container.replaceChildren();
     if (!items.length) {
       const empty = document.createElement("div");
       empty.className = "news-empty";
-      empty.textContent = (payload.warnings && payload.warnings[0]) || "在线新闻源暂未返回相关内容";
+      empty.textContent = allItems.length
+        ? state.newsFilter === "verified"
+          ? "当前结果中暂无达到五个独立来源的事件"
+          : "当前结果中暂无官方原文事件"
+        : (payload?.warnings?.[0] || "在线新闻源暂未返回相关内容");
       container.append(empty);
       refreshIcons();
       return;
@@ -1220,41 +1311,93 @@
 
     const fragment = document.createDocumentFragment();
     items.forEach((item) => {
-      const link = document.createElement("a");
-      link.className = "news-item";
-      link.href = item.safeUrl;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-      link.referrerPolicy = "strict-origin-when-cross-origin";
+      const article = document.createElement("article");
+      article.className = `news-item is-${item.verificationStatus}`;
 
+      const timeColumn = document.createElement("div");
+      timeColumn.className = "news-time-column";
       const time = document.createElement("time");
       time.dateTime = item.published_at || "";
       time.textContent = formatNewsTime(item.published_at);
+      const score = document.createElement("small");
+      score.textContent = `Q${safeNumber(item.verification_score).toFixed(0)}`;
+      timeColumn.append(time, score);
 
       const copy = document.createElement("div");
       copy.className = "news-copy";
+      const statusLine = document.createElement("div");
+      statusLine.className = "news-status-line";
+      statusLine.append(verificationBadge(item));
+      const category = document.createElement("span");
+      category.className = "news-category";
+      category.textContent = newsCategoryLabels[item.event_category] || "公司动态";
+      statusLine.append(category);
+
+      const titleLink = document.createElement("a");
+      titleLink.className = "news-title-link";
+      titleLink.href = item.safeUrl;
+      titleLink.target = "_blank";
+      titleLink.rel = "noopener noreferrer";
+      titleLink.referrerPolicy = "strict-origin-when-cross-origin";
       const title = document.createElement("strong");
       title.textContent = item.title;
+      titleLink.append(title, createIcon("external-link"));
+
       const meta = document.createElement("span");
+      meta.className = "news-primary-meta";
       meta.textContent = [
         item.publisher || "来源未知",
-        item.provider_label || item.provider,
         item.credibility,
+        item.first_reported_at ? `首报 ${formatNewsTime(item.first_reported_at)}` : "",
       ].filter(Boolean).join(" · ");
-      copy.append(title, meta);
+      copy.append(statusLine, titleLink, meta);
       if (item.summary) {
         const summary = document.createElement("p");
         summary.textContent = item.summary;
         copy.append(summary);
       }
 
-      const external = createIcon("external-link");
-      external.className = "news-external-icon";
-      link.append(time, copy, external);
-      fragment.append(link);
+      const details = document.createElement("details");
+      details.className = "news-sources";
+      const sourceSummary = document.createElement("summary");
+      sourceSummary.append(
+        createIcon(item.verificationStatus === "five-source" ? "shield-check" : "list-tree"),
+        document.createTextNode(`来源证据 ${item.sourceCount}`),
+        createIcon("chevron-down"),
+      );
+      const sourceList = document.createElement("div");
+      sourceList.className = "news-source-list";
+      item.sources.forEach((source) => {
+        const sourceLink = document.createElement("a");
+        sourceLink.className = "news-source-reference";
+        sourceLink.href = source.safeUrl;
+        sourceLink.target = "_blank";
+        sourceLink.rel = "noopener noreferrer";
+        sourceLink.referrerPolicy = "strict-origin-when-cross-origin";
+        const sourceMeta = document.createElement("span");
+        sourceMeta.textContent = [
+          source.publisher || "来源未知",
+          source.official ? "官方" : source.credibility,
+          formatNewsTime(source.published_at),
+        ].filter(Boolean).join(" · ");
+        const sourceTitle = document.createElement("strong");
+        sourceTitle.textContent = source.title || item.title;
+        sourceLink.append(sourceMeta, sourceTitle, createIcon("external-link"));
+        sourceList.append(sourceLink);
+      });
+      details.append(sourceSummary, sourceList);
+      copy.append(details);
+      article.append(timeColumn, copy);
+      fragment.append(article);
     });
     container.append(fragment);
     refreshIcons();
+  }
+
+  function renderNews(payload) {
+    state.newsData = payload;
+    renderNewsProviders(payload.providers || [], payload.warnings || [], payload.source_portals || []);
+    renderNewsItems(payload);
   }
 
   function renderNewsError(message) {
@@ -2457,6 +2600,17 @@
     });
     refreshButton.addEventListener("click", () => loadDashboard({ forceNews: true }));
     refreshNewsButton.addEventListener("click", () => loadNews(true));
+    document.querySelectorAll("[data-news-filter]").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.newsFilter = button.dataset.newsFilter || "all";
+        document.querySelectorAll("[data-news-filter]").forEach((item) => {
+          const selected = item === button;
+          item.classList.toggle("is-selected", selected);
+          item.setAttribute("aria-selected", String(selected));
+        });
+        if (state.newsData) renderNewsItems(state.newsData);
+      });
+    });
     byId("open-quant-settings-button").addEventListener("click", openQuantSettings);
     quantSettingsForm.addEventListener("submit", applyQuantSettings);
     byId("close-quant-settings-button").addEventListener("click", () => quantSettingsDialog.close());

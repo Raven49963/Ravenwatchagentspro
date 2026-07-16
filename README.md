@@ -11,14 +11,14 @@
 - 全量证券库：随包提供 19,826 条可离线检索的目录快照，覆盖 5,536 只 A 股、11,464 只美股、2,809 只港股与 17 个全球精选标的；支持代码/名称、资产类型、板块分类、分页和来源状态筛选。
 - 在线目录更新：A 股与港股使用新浪财经并保留东方财富回退，美股使用 Nasdaq Trader 官方目录；本地缓存每日后台刷新，断网或上游异常时自动使用最近缓存与随包快照。
 - 全球证券搜索：按代码或名称联想 Microsoft Finance 在线目录，可筛选股票、ETF、指数、基金和 REIT，并显示交易所与币种；76 个常用标的与 35 个 ETF 仍固定置顶。
-- 21 个可审计因子：在趋势、动量、突破、反转、波动、回撤、量价、OBV 与相对强弱之外，增加 12-1 月动量、Amihud 流动性、Parkinson 区间波动、下行风险、MFI、ADX、隔夜和日内收益结构。
+- 27 个可审计因子：覆盖趋势、动量、突破、反转、波动、回撤、量价、OBV 与相对强弱，并加入 12-1 月动量、波动调整动量、趋势效率、52 周高点距离、Amihud 流动性、Parkinson 区间波动、预期损失、Ulcer 指数、跳空风险、下行风险、MFI、ADX、隔夜和日内收益结构。
 - 因子方法来源：新增因子返回公式、最低历史长度与论文/指标文档链接；历史不足时明确显示 `N/A`，不会用零分冒充有效信号。
 - 5 类策略融合：趋势跟随、多周期动量、放量突破、均值回归、量价确认，并按市场状态动态调整权重。
 - 滚动样本外验证：仅用过去 126/252 个交易日从三套固定画像中选择下一测试段策略，次日执行信号，并拼接成不回填训练收益的样本外净值。
 - 量化稳健性：同时显示买入持有基准、成本压力、折次胜率、概率 Sharpe、最大回撤，以及 stationary bootstrap 风险区间；训练/测试窗口、手续费、滑点、仓位上限、压力倍数、风险期限、重采样次数、平均区块和随机种子均可量化调整。
-- 因子挖掘：最多检验 14 个时间序列，显示 Rank IC、t 值、方向胜率、样本数和最近 30 期七维因子热力图。
-- 在线证据：聚合东方财富、Yahoo Finance 与交易所 RSS，并接入巨潮资讯、SEC EDGAR、HKEXnews 等官方披露；每条内容显示发布者、聚合来源、可信度等级和原文链接。
-- 基本面快照：A 股、美股、港股和全球标的使用多提供方并发获取估值、成长、盈利和偿债指标，单个来源失败时保留其余有效字段，并显示字段来源、报告期和提供方状态。
+- 因子挖掘：最多检验 20 个时间序列，显示 Rank IC、t 值、方向胜率、三段历史 IC 稳定度、样本数和最近 30 期七维因子热力图。
+- 在线证据：聚合东方财富、Yahoo Finance、Nasdaq RSS 与 GDELT 原始媒体索引，并接入巨潮资讯、SEC EDGAR、HKEXnews 等官方披露；同一事件按标题、数值、类别与发布时间保守聚类，只有五个独立发布者共同报道才标记“五源验证”，官方原文单独保留且不会被媒体转载替代。
+- 基本面快照：A 股、美股、港股和全球标的使用多提供方并发获取估值、成长、盈利、现金流和偿债指标；字段按来源可靠度、报告期新鲜度与跨源一致性选择，保留冲突值并显示质量分、报告期、字段来源和提供方状态。
 - 本地证据评分：技术、样本外量化、基本面和新闻四类证据在本机确定性计算；缺失证据不按中性分处理，而是按覆盖度与可靠度重新归一化权重，同时展示冲突、置信度和覆盖率。
 - 综合风控：市场状态、策略共识、目标仓位、置信度、ATR 止损止盈与风险等级。
 - 12 个投研角色：技术、情绪、新闻、基本面、多空研究、研究经理、交易员、三类风险分析师和组合经理。
@@ -72,13 +72,13 @@ cd D:\codex\quant-starter
 - 美股日线：Nasdaq 官方历史接口、Yahoo Chart、Microsoft Finance、yfinance、Stooq；实时行情依次尝试 Yahoo、Nasdaq 和 Microsoft Finance。
 - 港股日线：腾讯直连、Microsoft Finance、东方财富/AkShare；实时行情依次尝试腾讯和 Microsoft Finance。
 - 全球市场：Microsoft Finance 为主要日线与分时来源，并保留 Yahoo Chart 与 yfinance 回退。
-- A 股基本面：Microsoft Finance 估值/市场数据与新浪财务指标并发合并。
-- 美股基本面：Microsoft Finance、Nasdaq 官方财务报表、SEC XBRL Company Facts 与 Yahoo/yfinance 多级回退。
-- 港股与全球基本面：Microsoft Finance 为主要来源，并保留 Yahoo/yfinance 回退。
+- A 股基本面：Microsoft Finance 估值/市场数据、新浪财经财务指标与东方财富财务分析并发合并。
+- 美股基本面：Microsoft Finance、Nasdaq 官方财务报表、SEC XBRL Company Facts、东方财富财务分析与 Yahoo/yfinance 多级回退。
+- 港股基本面：Microsoft Finance、东方财富财务分析与 Yahoo/yfinance 并发合并；全球标的保留 Microsoft Finance 与 Yahoo/yfinance 回退。
 - 证券目录：A 股和港股优先读取[新浪财经市场中心](https://vip.stock.finance.sina.com.cn/mkt/)，东方财富作为回退；美股读取 [Nasdaq Trader Symbol Directory](https://www.nasdaqtrader.com/trader.aspx?id=symboldirdefs)。目录在 `%LOCALAPPDATA%\RavenWatchAgentsPro\catalog` 中缓存，并随程序提供可离线检索的压缩快照。
-- A 股新闻与披露：[巨潮资讯](https://www.cninfo.com.cn/)和[东方财富](https://finance.eastmoney.com/)。
-- 美股新闻与披露：[SEC EDGAR](https://www.sec.gov/edgar/search/)、[Nasdaq RSS](https://www.nasdaq.com/nasdaq-rss-feeds)和 [Yahoo Finance](https://finance.yahoo.com/)。
-- 港股新闻与披露：[HKEXnews](https://www.hkexnews.hk/)和 [Yahoo Finance](https://finance.yahoo.com/)。
+- A 股新闻与披露：[巨潮资讯](https://www.cninfo.com.cn/)、[东方财富](https://finance.eastmoney.com/)、上交所/深交所披露入口与 [GDELT](https://www.gdeltproject.org/) 原始媒体索引。
+- 美股新闻与披露：[SEC EDGAR](https://www.sec.gov/edgar/search/)、[Nasdaq RSS](https://www.nasdaq.com/nasdaq-rss-feeds)、[Yahoo Finance](https://finance.yahoo.com/)与 [GDELT](https://www.gdeltproject.org/)。
+- 港股新闻与披露：[HKEXnews](https://www.hkexnews.hk/)、[Yahoo Finance](https://finance.yahoo.com/)与 [GDELT](https://www.gdeltproject.org/)。
 
 终端每 15 秒重新获取一次可用行情，但这不等于所有交易所都提供零延迟数据。实际时效取决于交易所规则和上游授权；界面会显示行情时间、开闭市状态和估算延迟，研究时应以这些字段为准。
 
@@ -322,9 +322,9 @@ run_demo.py                        命令行入口
 src/quant_starter/data.py          多源行情与回退
 src/quant_starter/global_market.py Microsoft Finance 全球目录、报价与 OHLCV
 src/quant_starter/realtime.py      四市场实时快照、分钟行情与延迟状态
-src/quant_starter/factors.py       21 因子、市场状态、5 策略融合与 14 序列 IC 挖掘
-src/quant_starter/news.py          多市场新闻、SEC/HKEX/巨潮公告与来源标注
-src/quant_starter/research_data.py 多市场基本面、新闻证据聚合与提供方隔离
+src/quant_starter/factors.py       27 因子、市场状态、5 策略融合与 20 序列 IC 稳定性挖掘
+src/quant_starter/news.py          多市场新闻、官方公告、事件聚类与五源交叉验证
+src/quant_starter/research_data.py 多市场基本面、字段级证据与质量评分
 src/quant_starter/local_evidence.py 本地新闻、基本面与综合证据评分
 src/quant_starter/instrument_catalog.py 四市场证券目录、在线刷新与离线缓存
 src/quant_starter/walk_forward.py 滚动样本外选择、成本压力与 bootstrap 风险

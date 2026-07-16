@@ -32,7 +32,10 @@ from quant_starter.news import (
     NewsArticle,
     NewsFeed,
     NewsProviderStatus,
+    _aggregate_events,
     _deduplicate,
+    _fetch_gdelt_news,
+    _fetch_nasdaq_news,
     _parse_rss_articles,
     _relevance_terms,
     _safe_http_url,
@@ -69,7 +72,7 @@ class FactorResearchTests(unittest.TestCase):
 
     def test_factor_engine_returns_auditable_bounded_signals(self) -> None:
         signals = calculate_factor_signals(self.bars)
-        self.assertEqual(len(signals), 21)
+        self.assertEqual(len(signals), 27)
         self.assertAlmostEqual(sum(item.weight for item in signals), 1.0)
         self.assertTrue(all(-100 <= item.score <= 100 for item in signals))
         self.assertTrue(all(item.description for item in signals))
@@ -80,7 +83,7 @@ class FactorResearchTests(unittest.TestCase):
             set(),
         )
         referenced = [item for item in signals if item.reference_url]
-        self.assertEqual(len(referenced), 8)
+        self.assertEqual(len(referenced), 14)
         self.assertTrue(all(item.formula for item in referenced))
         self.assertTrue(all(item.reference_url.startswith("https://") for item in referenced))
 
@@ -110,7 +113,7 @@ class FactorResearchTests(unittest.TestCase):
 
     def test_factor_mining_uses_rank_ic_without_scipy(self) -> None:
         results = mine_time_series_factors(self.bars, horizon_days=5)
-        self.assertEqual(len(results), 14)
+        self.assertEqual(len(results), 20)
         self.assertTrue(all(item.observations >= 40 for item in results))
         self.assertTrue(
             all(-1 <= item.information_coefficient <= 1 for item in results)
@@ -118,6 +121,8 @@ class FactorResearchTests(unittest.TestCase):
         self.assertGreaterEqual(results[0].observations, results[-1].observations - 30)
         self.assertIn("amihud_liquidity", {item.key for item in results})
         self.assertIn("momentum_12_1", {item.key for item in results})
+        self.assertTrue(all(0 <= item.stability_score <= 100 for item in results))
+        self.assertTrue(all(len(item.fold_information_coefficients) >= 2 for item in results))
 
     def test_factor_history_is_bounded_and_chronological(self) -> None:
         history = build_factor_history(self.bars, periods=30)
@@ -176,6 +181,114 @@ class OnlineNewsTests(unittest.TestCase):
         self.assertEqual(items[0].summary, "Revenue grew year over year.")
         self.assertEqual(items[0].published_at, "2026-07-14T12:30:00+00:00")
 
+    def test_gdelt_parser_keeps_original_publishers_and_direct_links(self) -> None:
+        payload = {
+            "articles": [
+                {
+                    "title": "NVIDIA launches new platform",
+                    "url": "https://wire-one.com/nvidia-platform",
+                    "domain": "wire-one.com",
+                    "seendate": "20260715T123000Z",
+                    "language": "English",
+                    "sourcecountry": "United States",
+                }
+            ]
+        }
+        with mock.patch(
+            "quant_starter.news._read_bytes",
+            return_value=json.dumps(payload).encode("utf-8"),
+        ):
+            items = _fetch_gdelt_news("NVDA", "NVIDIA", 10, 5)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].publisher, "wire-one.com")
+        self.assertEqual(items[0].published_at, "2026-07-15T12:30:00+00:00")
+        self.assertEqual(items[0].url, "https://wire-one.com/nvidia-platform")
+
+    def test_nasdaq_rss_is_exchange_media_not_official_filing(self) -> None:
+        payload = b"""<?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0"><channel><item>
+        <title>NVIDIA market update</title>
+        <link>https://www.nasdaq.com/articles/nvidia-market-update</link>
+        <pubDate>Tue, 14 Jul 2026 12:30:00 +0000</pubDate>
+        </item></channel></rss>"""
+        with mock.patch("quant_starter.news._read_bytes", return_value=payload):
+            items = _fetch_nasdaq_news("NVDA", 5, 5)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].source_kind, "exchange-media")
+        self.assertEqual(items[0].credibility, "交易所新闻频道")
+        events, verification = _aggregate_events(items, 5)
+        self.assertEqual(events[0].verification_status, "single-source")
+        self.assertEqual(verification.official_primary_count, 0)
+
+    def test_event_verification_requires_five_independent_publishers(self) -> None:
+        articles = [
+            NewsArticle(
+                article_id=f"source-{index}",
+                title="NVIDIA launches next generation AI platform",
+                publisher=publisher,
+                published_at=f"2026-07-15T1{index}:00:00+00:00",
+                url=f"https://source-{index}.com/nvidia-platform",
+                provider="gdelt" if index < 4 else "yahoo-finance",
+                provider_label="News index",
+            )
+            for index, publisher in enumerate(
+                ("Wire One", "Wire Two", "Wire Three", "Wire Four", "Wire Five")
+            )
+        ]
+        articles.append(
+            NewsArticle(
+                article_id="duplicate-reuters",
+                title="NVIDIA launches next generation AI platform",
+                publisher="Wire One",
+                published_at="2026-07-15T16:00:00+00:00",
+                url="https://source-1.com/duplicate",
+                provider="nasdaq-rss",
+                provider_label="Nasdaq RSS",
+            )
+        )
+        events, verification = _aggregate_events(
+            articles,
+            10,
+            relevance_terms=("nvidia", "nvda"),
+        )
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].verification_status, "five-source")
+        self.assertEqual(events[0].verification_count, 5)
+        self.assertEqual(events[0].provider_count, 3)
+        self.assertEqual(verification.five_source_verified_count, 1)
+
+    def test_event_clustering_keeps_unrelated_news_and_official_primary(self) -> None:
+        filing = NewsArticle(
+            article_id="filing",
+            title="8-K quarterly results filing",
+            publisher="U.S. SEC EDGAR",
+            published_at="2026-07-15T10:00:00+00:00",
+            url="https://www.sec.gov/filing",
+            provider="sec-edgar",
+            provider_label="SEC EDGAR",
+            source_kind="filing",
+            credibility="监管机构官方",
+        )
+        product = NewsArticle(
+            article_id="product",
+            title="NVIDIA launches a new gaming processor",
+            publisher="Product Wire",
+            published_at="2026-07-15T11:00:00+00:00",
+            url="https://product-wire.com/nvidia-product",
+            provider="gdelt",
+            provider_label="GDELT",
+        )
+        events, verification = _aggregate_events(
+            [filing, product],
+            10,
+            relevance_terms=("nvidia", "nvda"),
+        )
+        self.assertEqual(len(events), 2)
+        statuses = {event.article_id: event.verification_status for event in events}
+        self.assertIn("official-primary", statuses.values())
+        self.assertIn("single-source", statuses.values())
+        self.assertEqual(verification.official_primary_count, 1)
+
     def test_news_aggregator_deduplicates_and_isolates_provider_failure(self) -> None:
         duplicate = self._article(
             "yahoo-finance",
@@ -196,6 +309,10 @@ class OnlineNewsTests(unittest.TestCase):
                 "quant_starter.news._fetch_sec_filings",
                 return_value=[],
             ),
+            mock.patch(
+                "quant_starter.news._fetch_gdelt_news",
+                return_value=[],
+            ),
         ):
             feed = fetch_online_news(
                 "nasdaq",
@@ -210,9 +327,39 @@ class OnlineNewsTests(unittest.TestCase):
                 "yahoo-finance": "ok",
                 "nasdaq-rss": "error",
                 "sec-edgar": "empty",
+                "gdelt": "empty",
             },
         )
         self.assertIn("Nasdaq", feed.warnings[0])
+
+    def test_global_news_provider_ids_remain_distinct(self) -> None:
+        yahoo = self._article(
+            "yahoo-finance",
+            "Global ETF allocation update",
+            "https://finance.yahoo.com/global-etf",
+            "2026-07-15T01:00:00+00:00",
+        )
+        gdelt = self._article(
+            "gdelt",
+            "Global ETF allocation update",
+            "https://wire.example/global-etf",
+            "2026-07-15T02:00:00+00:00",
+        )
+        with (
+            mock.patch("quant_starter.news._fetch_yahoo_news", return_value=[yahoo]),
+            mock.patch("quant_starter.news._fetch_gdelt_news", return_value=[gdelt]),
+        ):
+            feed = fetch_online_news(
+                "global",
+                "SPY",
+                company_name="SPDR S&P 500 ETF Trust",
+                timeout_seconds=2,
+            )
+        self.assertEqual(
+            [provider.provider for provider in feed.providers],
+            ["yahoo-finance", "gdelt"],
+        )
+        self.assertEqual(len({provider.provider for provider in feed.providers}), 2)
 
     def test_news_ranking_prioritizes_relevance_then_official_sources(self) -> None:
         generic = self._article(
@@ -404,8 +551,8 @@ class RealtimeMarketTests(unittest.TestCase):
 class WebServiceTests(unittest.TestCase):
     def test_factor_registry_exposes_external_methodology(self) -> None:
         payload = research_factors()
-        self.assertEqual(payload["total_factors"], 21)
-        self.assertEqual(payload["referenced_factors"], 8)
+        self.assertEqual(payload["total_factors"], 27)
+        self.assertEqual(payload["referenced_factors"], 14)
         self.assertEqual(payload["factors"], factor_reference_catalog())
 
     def test_research_provider_registry_exposes_supported_services(self) -> None:

@@ -49,7 +49,7 @@
       </div>
       <strong>A股 · 美股 · 港股 · 全球 ETF</strong>
       <span id="sidebar-provider">等待数据源</span>
-      <small>v1.7 DeepSeek V4</small>
+      <small>v1.8 DeepSeek V4</small>
     </div>
   </aside>
 
@@ -286,6 +286,11 @@
           </div>
           <div class="fundamental-snapshot">
             <div class="evidence-subheading"><strong>基本面快照</strong><span id="fundamental-meta">等待数据</span></div>
+            <div class="fundamental-quality-strip" aria-live="polite">
+              <span>数据质量 <strong id="fundamental-quality">--</strong></span>
+              <span>跨源一致 <strong id="fundamental-agreement">--</strong></span>
+              <span>已核字段 <strong id="fundamental-verified">--</strong></span>
+            </div>
             <div id="fundamental-metrics" class="fundamental-metrics" aria-live="polite"></div>
           </div>
         </div>
@@ -317,6 +322,14 @@
         <div id="news-source-status" class="news-source-status" aria-live="polite">
           <span class="news-provider is-loading"><b></b>正在连接新闻源</span>
         </div>
+        <div class="news-evidence-toolbar">
+          <div class="segmented-control news-filter-control" role="tablist" aria-label="新闻验证筛选">
+            <button class="is-selected" type="button" data-news-filter="all" role="tab" aria-selected="true">全部事件</button>
+            <button type="button" data-news-filter="verified" role="tab" aria-selected="false">五源验证</button>
+            <button type="button" data-news-filter="official" role="tab" aria-selected="false">官方原文</button>
+          </div>
+          <span id="news-verification-summary">验证阈值 5 个独立来源</span>
+        </div>
         <div id="news-list" class="news-list" aria-live="polite">
           <div class="news-empty">等待当前标的的在线新闻</div>
         </div>
@@ -333,7 +346,7 @@
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>因子</th><th>IC</th><th>t 值</th><th>胜率</th><th>样本</th></tr>
+              <tr><th>因子</th><th>IC</th><th>稳定</th><th>t 值</th><th>胜率</th><th>样本</th></tr>
             </thead>
             <tbody id="mining-table-body"></tbody>
           </table>

@@ -31,7 +31,7 @@ CATALOG_STALE_SECONDS = 14 * 24 * 60 * 60
 CATALOG_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36 "
-    "RavenWatchAgentsPro/1.7"
+    "RavenWatchAgentsPro/1.8"
 )
 CATALOG_RESOURCE = Path(__file__).with_name("resources") / "instrument_catalog.json.gz"
 

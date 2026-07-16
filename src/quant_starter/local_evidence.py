@@ -43,12 +43,12 @@ def _extract(
     fields: dict[str, Any],
     field_sources: dict[str, str],
     aliases: tuple[tuple[str, float], ...],
-) -> tuple[float | None, str]:
+) -> tuple[float | None, str, str]:
     for key, scale in aliases:
         value = _finite(fields.get(key))
         if value is not None:
-            return value * scale, field_sources.get(key, "")
-    return None, ""
+            return value * scale, field_sources.get(key, ""), key
+    return None, "", ""
 
 
 def _format_metric(value: float | None, unit: str) -> str:
@@ -125,6 +125,16 @@ _FUNDAMENTAL_SPECS: tuple[dict[str, Any], ...] = (
         ),
     },
     {
+        "key": "gross_margin",
+        "label": "毛利率",
+        "category": "profitability",
+        "unit": "percent",
+        "aliases": (("grossMargins", 1.0),),
+        "score": lambda value: _piecewise(
+            value, ((-0.1, -90), (0, -35), (0.15, 8), (0.3, 38), (0.5, 62), (0.8, 72))
+        ),
+    },
+    {
         "key": "return_on_equity",
         "label": "净资产收益率",
         "category": "profitability",
@@ -132,6 +142,16 @@ _FUNDAMENTAL_SPECS: tuple[dict[str, Any], ...] = (
         "aliases": (("returnOnEquity", 1.0), ("roe", 1.0), ("净资产收益率(%)", 0.01)),
         "score": lambda value: _piecewise(
             value, ((-0.4, -95), (0, -28), (0.08, 12), (0.15, 48), (0.3, 72), (0.6, 52), (1.2, 18))
+        ),
+    },
+    {
+        "key": "return_on_assets",
+        "label": "总资产回报率",
+        "category": "profitability",
+        "unit": "percent",
+        "aliases": (("returnOnAssets", 1.0),),
+        "score": lambda value: _piecewise(
+            value, ((-0.2, -92), (0, -25), (0.04, 8), (0.08, 38), (0.15, 68), (0.35, 76))
         ),
     },
     {
@@ -164,6 +184,46 @@ _FUNDAMENTAL_SPECS: tuple[dict[str, Any], ...] = (
             value, ((0.3, -85), (0.8, -42), (1, -8), (1.5, 42), (3, 55), (6, 20), (12, -5))
         ),
     },
+    {
+        "key": "quick_ratio",
+        "label": "速动比率",
+        "category": "leverage",
+        "unit": "multiple",
+        "aliases": (("quickRatio", 1.0),),
+        "score": lambda value: _piecewise(
+            value, ((0.2, -85), (0.6, -48), (1, 5), (1.5, 42), (2.5, 55), (6, 15), (12, -8))
+        ),
+    },
+    {
+        "key": "operating_cash_margin",
+        "label": "经营现金流率",
+        "category": "cashflow",
+        "unit": "percent",
+        "aliases": (("operatingCashFlowMargin", 1.0),),
+        "score": lambda value: _piecewise(
+            value, ((-0.3, -95), (0, -28), (0.05, 8), (0.15, 48), (0.3, 72), (0.7, 78))
+        ),
+    },
+    {
+        "key": "free_cash_flow_margin",
+        "label": "自由现金流率",
+        "category": "cashflow",
+        "unit": "percent",
+        "aliases": (("freeCashFlowMargin", 1.0),),
+        "score": lambda value: _piecewise(
+            value, ((-0.3, -95), (0, -32), (0.04, 8), (0.12, 45), (0.25, 70), (0.6, 76))
+        ),
+    },
+    {
+        "key": "cash_conversion",
+        "label": "现金利润比",
+        "category": "cashflow",
+        "unit": "multiple",
+        "aliases": (("cashConversion", 1.0),),
+        "score": lambda value: _piecewise(
+            value, ((-2, -95), (0, -45), (0.5, 0), (0.9, 42), (1.3, 64), (2.5, 48), (5, 5))
+        ),
+    },
 )
 
 
@@ -172,22 +232,29 @@ _CATEGORY_LABELS = {
     "growth": "增长",
     "profitability": "盈利",
     "leverage": "偿债",
+    "cashflow": "现金流",
 }
 _CATEGORY_WEIGHTS = {
-    "valuation": 0.25,
-    "growth": 0.25,
-    "profitability": 0.30,
-    "leverage": 0.20,
+    "valuation": 0.20,
+    "growth": 0.20,
+    "profitability": 0.25,
+    "leverage": 0.15,
+    "cashflow": 0.20,
 }
 
 
 def assess_fundamentals(snapshot: dict[str, Any]) -> dict[str, Any]:
     fields = dict(snapshot.get("fields") or snapshot)
     field_sources = dict(snapshot.get("field_sources") or {})
+    quality_payload = dict(snapshot.get("quality") or {})
+    metric_quality = dict(quality_payload.get("metric_quality") or {})
     metrics: list[dict[str, Any]] = []
-    category_values: dict[str, list[float]] = {key: [] for key in _CATEGORY_WEIGHTS}
+    category_values: dict[str, list[tuple[float, float]]] = {
+        key: [] for key in _CATEGORY_WEIGHTS
+    }
     for spec in _FUNDAMENTAL_SPECS:
-        value, source = _extract(fields, field_sources, spec["aliases"])
+        value, source, source_key = _extract(fields, field_sources, spec["aliases"])
+        evidence_quality = dict(metric_quality.get(spec["key"]) or {})
         if value is None:
             metrics.append(
                 {
@@ -200,11 +267,16 @@ def assess_fundamentals(snapshot: dict[str, Any]) -> dict[str, Any]:
                     "score": None,
                     "tone": "unavailable",
                     "source": "",
+                    "source_count": 0,
+                    "agreement": 0.0,
+                    "quality_score": 0,
                 }
             )
             continue
         score = round(_clamp(float(spec["score"](value))), 2)
-        category_values[spec["category"]].append(score)
+        quality_score = int(evidence_quality.get("quality_score") or 65)
+        reliability = _clamp(quality_score / 100, 0.2, 1.0)
+        category_values[spec["category"]].append((score, reliability))
         metrics.append(
             {
                 "key": spec["key"],
@@ -216,6 +288,10 @@ def assess_fundamentals(snapshot: dict[str, Any]) -> dict[str, Any]:
                 "score": score,
                 "tone": _metric_tone(score),
                 "source": source,
+                "source_key": source_key,
+                "source_count": int(evidence_quality.get("source_count") or 1),
+                "agreement": round(float(evidence_quality.get("agreement") or 0.5), 6),
+                "quality_score": quality_score,
             }
         )
 
@@ -224,7 +300,12 @@ def assess_fundamentals(snapshot: dict[str, Any]) -> dict[str, Any]:
     available_weight = 0.0
     for key, weight in _CATEGORY_WEIGHTS.items():
         values = category_values[key]
-        score = sum(values) / len(values) if values else None
+        reliability_sum = sum(reliability for _value, reliability in values)
+        score = (
+            sum(value * reliability for value, reliability in values) / reliability_sum
+            if reliability_sum
+            else None
+        )
         if score is not None:
             weighted_score += score * weight
             available_weight += weight
@@ -235,6 +316,7 @@ def assess_fundamentals(snapshot: dict[str, Any]) -> dict[str, Any]:
                 "available": score is not None,
                 "score": round(score, 2) if score is not None else None,
                 "metric_count": len(values),
+                "quality": round(100 * reliability_sum / len(values)) if values else 0,
             }
         )
 
@@ -257,7 +339,12 @@ def assess_fundamentals(snapshot: dict[str, Any]) -> dict[str, Any]:
             freshness = max(0.55, 1.0 - max(0, age_days - 180) / 1_100)
         except ValueError:
             freshness = 0.85
-    confidence = round(100 * coverage**0.65 * (0.72 + 0.28 * provider_ratio) * freshness)
+    data_quality = _finite(quality_payload.get("score"))
+    if data_quality is None:
+        data_quality = 100 * (0.72 + 0.28 * provider_ratio) * freshness
+    confidence = round(
+        100 * coverage**0.65 * (0.42 + 0.58 * _clamp(data_quality / 100, 0.0, 1.0))
+    )
     score = round(weighted_score / available_weight, 2) if available_weight else 0.0
     if available_metrics == 0:
         label = "数据不足"
@@ -288,10 +375,17 @@ def assess_fundamentals(snapshot: dict[str, Any]) -> dict[str, Any]:
         "available_metrics": available_metrics,
         "total_metrics": len(metrics),
         "report_date": report_date,
+        "data_quality": round(data_quality, 2),
+        "data_quality_label": str(quality_payload.get("label") or "来源待核"),
+        "cross_source_agreement": round(
+            float(quality_payload.get("cross_source_agreement") or 0.0), 6
+        ),
+        "verified_metric_count": int(quality_payload.get("verified_metric_count") or 0),
+        "report_age_days": quality_payload.get("report_age_days"),
         "metrics": metrics,
         "categories": categories,
         "warnings": list(snapshot.get("warnings") or []),
-        "method": "available-field weighted scoring; missing values are excluded",
+        "method": "source-quality and cross-source agreement weighted scoring; missing values are excluded",
     }
 
 
@@ -357,7 +451,18 @@ def assess_news(feed: dict[str, Any], *, now: datetime | None = None) -> dict[st
         source_weight = 1.35 if source_kind in {"filing", "exchange"} else 1.0
         if "官方" in credibility or "法定" in credibility or "监管" in credibility:
             source_weight = max(source_weight, 1.25)
-        weight = max(0.08, recency_weight) * source_weight
+        source_count = max(1, int(article.get("verification_count") or 1))
+        verification_score = _finite(article.get("verification_score"))
+        verification_reliability = (
+            _clamp(verification_score / 100, 0.25, 1.0)
+            if verification_score is not None
+            else min(1.0, 0.30 + 0.14 * source_count)
+        )
+        weight = (
+            max(0.08, recency_weight)
+            * source_weight
+            * (0.70 + 0.45 * verification_reliability)
+        )
         weighted_sum += sentiment * weight
         total_weight += weight
         if sentiment >= 15:
@@ -377,6 +482,11 @@ def assess_news(feed: dict[str, Any], *, now: datetime | None = None) -> dict[st
                 "positive_hits": positive,
                 "negative_hits": negative,
                 "uncertainty_hits": uncertain,
+                "verification_count": source_count,
+                "verification_status": str(
+                    article.get("verification_status") or "single-source"
+                ),
+                "verification_score": round(100 * verification_reliability, 2),
             }
         )
 
@@ -397,11 +507,17 @@ def assess_news(feed: dict[str, Any], *, now: datetime | None = None) -> dict[st
     lexical_coverage = (
         sum(abs(item["score"]) >= 1 for item in scored) / len(scored) if scored else 0.0
     )
+    verification_quality = (
+        sum(item["verification_score"] for item in scored) / (100 * len(scored))
+        if scored
+        else 0.0
+    )
     confidence = round(
         100
         * volume_confidence
         * (0.55 + 0.30 * provider_coverage + 0.15 * official_ratio)
         * (0.78 + 0.22 * lexical_coverage)
+        * (0.62 + 0.38 * verification_quality)
     )
     if not articles:
         label = "新闻不足"
@@ -435,6 +551,15 @@ def assess_news(feed: dict[str, Any], *, now: datetime | None = None) -> dict[st
         "neutral_count": neutral_count,
         "official_ratio": round(official_ratio, 6),
         "provider_coverage": round(provider_coverage, 6),
+        "five_source_verified_count": sum(
+            item["verification_status"] == "five-source" for item in scored
+        ),
+        "mean_source_count": round(
+            sum(item["verification_count"] for item in scored) / len(scored), 3
+        )
+        if scored
+        else 0.0,
+        "verification_quality": round(verification_quality, 6),
         "catalysts": catalysts,
         "risks": risks,
         "warnings": list(feed.get("warnings") or []),

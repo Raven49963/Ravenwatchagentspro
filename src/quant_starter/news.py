@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
 from hashlib import sha256
 from html.parser import HTMLParser
@@ -22,12 +23,34 @@ import xml.etree.ElementTree as ET
 MAX_RESPONSE_BYTES = 2_000_000
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 Chrome/126.0 Safari/537.36 RavenWatchAgentsPro/1.7"
+    "AppleWebKit/537.36 Chrome/126.0 Safari/537.36 RavenWatchAgentsPro/1.8"
 )
 SEC_USER_AGENT = os.environ.get(
     "RAVENWATCHAGENTSPRO_SEC_USER_AGENT",
-    "RavenWatchAgentsPro/1.7 quant-research contact@example.com",
+    "RavenWatchAgentsPro/1.8 quant-research contact@example.com",
 ).strip()
+VERIFICATION_SOURCE_THRESHOLD = 5
+_gdelt_cache_lock = threading.RLock()
+_gdelt_cache: dict[
+    tuple[str, str], tuple[float, float, tuple["NewsArticle", ...]]
+] = {}
+
+
+@dataclass(frozen=True)
+class NewsSourceReference:
+    source_id: str
+    title: str
+    publisher: str
+    published_at: str
+    url: str
+    provider: str
+    provider_label: str
+    source_kind: str = "media"
+    credibility: str = "财经媒体"
+    official: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -43,8 +66,18 @@ class NewsArticle:
     provider_url: str = ""
     source_kind: str = "media"
     credibility: str = "财经媒体"
+    event_id: str = ""
+    event_category: str = "company-update"
+    verification_status: str = "single-source"
+    verification_count: int = 1
+    provider_count: int = 1
+    official_source_count: int = 0
+    verification_score: float = 0.0
+    first_reported_at: str = ""
+    last_reported_at: str = ""
+    corroborating_sources: tuple[NewsSourceReference, ...] = ()
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -64,6 +97,24 @@ class NewsProviderStatus:
 
 
 @dataclass(frozen=True)
+class NewsVerification:
+    required_sources: int = VERIFICATION_SOURCE_THRESHOLD
+    raw_article_count: int = 0
+    event_count: int = 0
+    five_source_verified_count: int = 0
+    official_primary_count: int = 0
+    corroborated_count: int = 0
+    independent_source_count: int = 0
+    verified_event_ratio: float = 0.0
+    methodology: str = (
+        "同一事件按标题语义、事件类别与发布时间聚合；独立发布机构去重后达到 5 个才标记为五源验证。"
+    )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class NewsFeed:
     market: str
     symbol: str
@@ -73,6 +124,7 @@ class NewsFeed:
     warnings: tuple[str, ...]
     fetched_at: str
     source_portals: tuple[dict[str, str], ...] = ()
+    verification: NewsVerification = field(default_factory=NewsVerification)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -84,6 +136,7 @@ class NewsFeed:
             "warnings": list(self.warnings),
             "fetched_at": self.fetched_at,
             "source_portals": list(self.source_portals),
+            "verification": self.verification.to_dict(),
         }
 
 
@@ -195,6 +248,7 @@ def _published_iso(value: Any, *, offset_hours: int = 0) -> str:
             parsed = parsedate_to_datetime(raw)
         except (TypeError, ValueError, OverflowError):
             for pattern in (
+                "%Y%m%dT%H%M%SZ",
                 "%Y-%m-%d %H:%M:%S",
                 "%Y-%m-%d %H:%M",
                 "%Y-%m-%d",
@@ -303,6 +357,83 @@ def _fetch_yahoo_news(symbol: str, limit: int, timeout_seconds: float) -> list[N
     )
 
 
+def _gdelt_query(symbol: str, company_name: str) -> str:
+    candidates = [company_name.strip(), symbol.strip()]
+    terms: list[str] = []
+    for candidate in candidates:
+        normalized = re.sub(r"\s+", " ", candidate).strip()
+        if not normalized or normalized.casefold() in {item.casefold() for item in terms}:
+            continue
+        safe_term = normalized.replace('"', "")[:80]
+        if safe_term:
+            terms.append(safe_term)
+    quoted = [f'"{term}"' for term in terms[:2]]
+    return f"({' OR '.join(quoted)})" if len(quoted) > 1 else quoted[0]
+
+
+def _fetch_gdelt_news(
+    symbol: str,
+    company_name: str,
+    limit: int,
+    timeout_seconds: float,
+) -> list[NewsArticle]:
+    cache_key = (symbol.strip().upper(), company_name.strip().casefold())
+    now = time.monotonic()
+    with _gdelt_cache_lock:
+        cached = _gdelt_cache.get(cache_key)
+        if cached and now < cached[0]:
+            return list(cached[2])
+    query = _gdelt_query(symbol, company_name)
+    url = "https://api.gdeltproject.org/api/v2/doc/doc?" + urlencode(
+        {
+            "query": query,
+            "mode": "artlist",
+            "maxrecords": min(250, max(50, limit * 4)),
+            "timespan": "30d",
+            "sort": "datedesc",
+            "format": "json",
+        }
+    )
+    try:
+        payload = json.loads(_read_bytes(url, timeout_seconds=timeout_seconds))
+    except Exception:
+        with _gdelt_cache_lock:
+            stale = _gdelt_cache.get(cache_key)
+            if stale and now < stale[1]:
+                return list(stale[2])
+        raise
+    items: list[NewsArticle] = []
+    for raw in (payload or {}).get("articles") or []:
+        article_url = raw.get("url") or raw.get("url_mobile") or ""
+        publisher = raw.get("domain") or _publisher_from_url(str(article_url))
+        country = _plain_text(raw.get("sourcecountry"), 40)
+        language = _plain_text(raw.get("language"), 30)
+        context = " · ".join(part for part in (country, language) if part)
+        item = _article(
+            title=raw.get("title"),
+            publisher=publisher,
+            published=raw.get("seendate"),
+            url=article_url,
+            provider="gdelt",
+            provider_label="GDELT 全球新闻索引",
+            summary=context,
+            provider_url="https://www.gdeltproject.org/",
+            source_kind="aggregator",
+            credibility="跨媒体原始报道索引",
+        )
+        if item is not None:
+            items.append(item)
+        if len(items) >= min(250, max(50, limit * 4)):
+            break
+    with _gdelt_cache_lock:
+        _gdelt_cache[cache_key] = (
+            now + 10 * 60,
+            now + 24 * 60 * 60,
+            tuple(items),
+        )
+    return items
+
+
 def _xml_child_text(element: ET.Element, names: set[str]) -> str:
     for child in element:
         local_name = child.tag.rsplit("}", 1)[-1].casefold()
@@ -363,8 +494,8 @@ def _fetch_nasdaq_news(
         provider_label="Nasdaq 官方 RSS",
         limit=limit,
         provider_url="https://www.nasdaq.com/nasdaq-rss-feeds",
-        source_kind="exchange",
-        credibility="交易所官方",
+        source_kind="exchange-media",
+        credibility="交易所新闻频道",
     )
 
 
@@ -745,6 +876,387 @@ def _deduplicate(
     return tuple(selected)
 
 
+_SOURCE_ALIAS_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("sec", "edgar"), "sec-edgar"),
+    (("hkex",), "hkex"),
+    (("cninfo", "巨潮"), "cninfo"),
+    (("eastmoney", "东方财富"), "eastmoney"),
+    (("reuters", "路透"), "reuters"),
+    (("bloomberg", "彭博"), "bloomberg"),
+    (("apnews", "associatedpress", "美联社"), "associated-press"),
+    (("motleyfool", "foolcom"), "motley-fool"),
+    (("yahoofinance",), "yahoo-finance"),
+    (("nasdaq",), "nasdaq"),
+    (("stcn", "证券时报"), "stcn"),
+    (("cnstock", "上海证券报"), "cnstock"),
+)
+_TWO_LEVEL_SUFFIXES = {
+    "co.uk",
+    "com.au",
+    "com.cn",
+    "com.hk",
+    "com.sg",
+    "co.jp",
+    "net.cn",
+    "org.cn",
+}
+_EVENT_STOP_WORDS = {
+    "about",
+    "after",
+    "amid",
+    "announces",
+    "company",
+    "corporation",
+    "from",
+    "into",
+    "latest",
+    "limited",
+    "market",
+    "news",
+    "shares",
+    "stock",
+    "that",
+    "this",
+    "update",
+    "with",
+}
+
+
+def _official_source(item: NewsArticle) -> bool:
+    return item.source_kind in {"filing", "exchange"} or any(
+        word in item.credibility for word in ("官方", "法定", "监管")
+    )
+
+
+def _domain_source_id(url: str) -> str:
+    hostname = (urlsplit(url).hostname or "").casefold().removeprefix("www.")
+    parts = [part for part in hostname.split(".") if part]
+    if len(parts) < 2:
+        return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", hostname)
+    suffix = ".".join(parts[-2:])
+    root_index = -3 if suffix in _TWO_LEVEL_SUFFIXES and len(parts) >= 3 else -2
+    return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", parts[root_index])
+
+
+def _source_identity(item: NewsArticle) -> str:
+    publisher = re.sub(
+        r"[^a-z0-9\u4e00-\u9fff]+", "", item.publisher.casefold()
+    )
+    domain_id = _domain_source_id(item.url)
+    combined = f"{publisher} {domain_id}"
+    for aliases, canonical in _SOURCE_ALIAS_RULES:
+        if any(alias in combined for alias in aliases):
+            return canonical
+    if "." in item.publisher and domain_id:
+        return domain_id
+    generic = {
+        "",
+        "unknown",
+        "sourceunknown",
+        "来源未知",
+        "财经媒体",
+        "testwire",
+    }
+    if publisher not in generic:
+        for suffix in ("inc", "ltd", "limited", "company", "media", "newswire"):
+            publisher = publisher.removesuffix(suffix)
+        if publisher:
+            return publisher
+    return domain_id or re.sub(r"[^a-z0-9]+", "", item.provider.casefold())
+
+
+def _event_category(item: NewsArticle) -> str:
+    text = f"{item.title} {item.summary}".casefold()
+    categories = (
+        ("results", ("业绩", "财报", "营收", "净利润", "earnings", "revenue", "quarterly results")),
+        ("guidance", ("预告", "盈利预测", "guidance", "forecast", "outlook")),
+        ("capital-return", ("分红", "派息", "回购", "dividend", "buyback", "repurchase")),
+        ("financing", ("定增", "配股", "融资", "可转债", "offering", "financing", "convertible notes")),
+        ("transaction", ("收购", "并购", "出售", "入股", "acquisition", "merger", "stake sale")),
+        ("product-contract", ("中标", "合同", "订单", "获批", "发布", "launch", "contract", "approval", "order")),
+        ("regulatory-risk", ("调查", "处罚", "诉讼", "召回", "违约", "probe", "lawsuit", "recall", "sanction")),
+        ("management", ("任命", "辞任", "董事长", "总经理", "chief executive", "chairman", "resigns")),
+        ("analyst-rating", ("评级", "目标价", "上调", "下调", "upgrade", "downgrade", "price target")),
+    )
+    for category, terms in categories:
+        if any(term in text for term in terms):
+            return category
+    return "company-update"
+
+
+def _event_features(
+    item: NewsArticle,
+    relevance_terms: tuple[str, ...],
+) -> tuple[str, set[str], set[str]]:
+    text = item.title.casefold()
+    for term in relevance_terms:
+        text = text.replace(term.casefold(), " ")
+    text = re.sub(r"\s+[|\-–:]\s+[^|\-–:]{2,40}$", " ", text)
+    normalized = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", text)
+    tokens: set[str] = set()
+    numbers: set[str] = set()
+    for raw in re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]+", text):
+        if raw.isdigit():
+            if len(raw) >= 2:
+                numbers.add(raw)
+                tokens.add(raw)
+            continue
+        if re.fullmatch(r"[a-z0-9]+", raw):
+            if len(raw) >= 3 and raw not in _EVENT_STOP_WORDS:
+                tokens.add(raw)
+            continue
+        cleaned = raw
+        for word in ("公告", "公司", "股份", "集团", "关于", "发布"):
+            cleaned = cleaned.replace(word, "")
+        if len(cleaned) == 2:
+            tokens.add(cleaned)
+        elif len(cleaned) > 2:
+            tokens.update(cleaned[index : index + 2] for index in range(len(cleaned) - 1))
+    return normalized, tokens, numbers
+
+
+def _article_datetime(item: NewsArticle) -> datetime | None:
+    if not item.published_at:
+        return None
+    try:
+        value = datetime.fromisoformat(item.published_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _event_similarity(
+    left: NewsArticle,
+    right: NewsArticle,
+    relevance_terms: tuple[str, ...],
+) -> float:
+    left_time = _article_datetime(left)
+    right_time = _article_datetime(right)
+    if left_time and right_time and abs((left_time - right_time).total_seconds()) > 96 * 3_600:
+        return 0.0
+    left_category = _event_category(left)
+    right_category = _event_category(right)
+    left_normalized, left_tokens, left_numbers = _event_features(left, relevance_terms)
+    right_normalized, right_tokens, right_numbers = _event_features(right, relevance_terms)
+    if not left_normalized or not right_normalized:
+        return 0.0
+    if left_normalized == right_normalized:
+        return 1.0
+    sequence_score = SequenceMatcher(None, left_normalized, right_normalized).ratio()
+    intersection = len(left_tokens & right_tokens)
+    union = len(left_tokens | right_tokens)
+    jaccard = intersection / union if union else 0.0
+    overlap = intersection / min(len(left_tokens), len(right_tokens)) if left_tokens and right_tokens else 0.0
+    category_match = left_category == right_category
+    if not category_match and left_category != "company-update" and right_category != "company-update":
+        return sequence_score if sequence_score >= 0.92 else 0.0
+    if left_numbers and right_numbers and not (left_numbers & right_numbers) and sequence_score < 0.88:
+        return 0.0
+    score = max(sequence_score, jaccard * 0.9 + overlap * 0.1)
+    if sequence_score >= 0.82:
+        return score
+    if intersection >= 3 and jaccard >= 0.44 and overlap >= 0.62:
+        return score
+    if category_match and intersection >= 4 and overlap >= 0.72:
+        return score
+    return 0.0
+
+
+def _aggregate_events(
+    items: list[NewsArticle],
+    limit: int,
+    *,
+    relevance_terms: tuple[str, ...] = (),
+) -> tuple[tuple[NewsArticle, ...], NewsVerification]:
+    def rank(item: NewsArticle) -> tuple[int, int, float]:
+        haystack = f"{item.title} {item.summary}".casefold()
+        relevance = sum(3 for term in relevance_terms if term in haystack)
+        published = _article_datetime(item)
+        return (
+            relevance,
+            1 if _official_source(item) else 0,
+            published.timestamp() if published else 0.0,
+        )
+
+    clusters: list[list[NewsArticle]] = []
+    for item in sorted(items, key=rank, reverse=True):
+        best_cluster: list[NewsArticle] | None = None
+        best_score = 0.0
+        for cluster in clusters:
+            similarity = max(
+                _event_similarity(item, existing, relevance_terms)
+                for existing in cluster
+            )
+            if similarity > best_score:
+                best_score = similarity
+                best_cluster = cluster
+        if best_cluster is not None and best_score > 0:
+            best_cluster.append(item)
+        else:
+            clusters.append([item])
+
+    events: list[NewsArticle] = []
+    for cluster in clusters:
+        representative = max(
+            cluster,
+            key=lambda item: (
+                1 if _official_source(item) else 0,
+                rank(item)[0],
+                len(item.summary),
+                rank(item)[2],
+            ),
+        )
+        source_articles: dict[str, NewsArticle] = {}
+        for item in cluster:
+            source_id = _source_identity(item)
+            current = source_articles.get(source_id)
+            if current is None or (
+                _official_source(item), len(item.summary), rank(item)[2]
+            ) > (
+                _official_source(current), len(current.summary), rank(current)[2]
+            ):
+                source_articles[source_id] = item
+        references = tuple(
+            NewsSourceReference(
+                source_id=source_id,
+                title=item.title,
+                publisher=item.publisher,
+                published_at=item.published_at,
+                url=item.url,
+                provider=item.provider,
+                provider_label=item.provider_label,
+                source_kind=item.source_kind,
+                credibility=item.credibility,
+                official=_official_source(item),
+            )
+            for source_id, item in sorted(
+                source_articles.items(),
+                key=lambda pair: (
+                    1 if _official_source(pair[1]) else 0,
+                    rank(pair[1])[2],
+                ),
+                reverse=True,
+            )
+        )
+        source_count = len(references)
+        provider_count = len({item.provider for item in cluster})
+        official_count = sum(reference.official for reference in references)
+        if source_count >= VERIFICATION_SOURCE_THRESHOLD:
+            status = "five-source"
+        elif official_count:
+            status = "official-primary"
+        elif source_count >= 2:
+            status = "corroborated"
+        else:
+            status = "single-source"
+        verification_score = round(
+            100
+            * (
+                0.75 * min(source_count / VERIFICATION_SOURCE_THRESHOLD, 1.0)
+                + 0.10 * min(provider_count / 3.0, 1.0)
+                + 0.15 * min(official_count, 1)
+            ),
+            1,
+        )
+        dates = sorted(
+            date for date in (_article_datetime(item) for item in cluster) if date
+        )
+        richest_summary = max(
+            (item.summary for item in cluster),
+            key=lambda value: len(value),
+            default=representative.summary,
+        )
+        event_key = sha256(
+            (
+                f"{_event_category(representative)}|"
+                f"{_event_features(representative, relevance_terms)[0]}|"
+                f"{dates[0].date().isoformat() if dates else ''}"
+            ).encode("utf-8")
+        ).hexdigest()[:20]
+        events.append(
+            replace(
+                representative,
+                article_id=event_key,
+                summary=richest_summary,
+                event_id=event_key,
+                event_category=_event_category(representative),
+                verification_status=status,
+                verification_count=source_count,
+                provider_count=provider_count,
+                official_source_count=official_count,
+                verification_score=verification_score,
+                first_reported_at=(dates[0].isoformat(timespec="seconds") if dates else ""),
+                last_reported_at=(dates[-1].isoformat(timespec="seconds") if dates else ""),
+                corroborating_sources=references[:20],
+            )
+        )
+
+    status_rank = {
+        "five-source": 3,
+        "official-primary": 2,
+        "corroborated": 1,
+        "single-source": 0,
+    }
+    ordered_events = sorted(
+        events,
+        key=lambda item: (
+            rank(item)[0],
+            status_rank[item.verification_status],
+            item.verification_score,
+            rank(item)[2],
+        ),
+        reverse=True,
+    )
+    selected: list[NewsArticle] = []
+    deferred: list[NewsArticle] = []
+    source_event_counts: dict[str, int] = {}
+    category_counts: dict[str, int] = {}
+    filing_count = 0
+    source_cap = max(2, math.ceil(limit / 3))
+    category_cap = max(3, math.ceil(limit / 2))
+    filing_cap = max(2, math.ceil(limit / 3))
+    for event in ordered_events:
+        source_id = _source_identity(event)
+        over_cap = (
+            source_event_counts.get(source_id, 0) >= source_cap
+            or category_counts.get(event.event_category, 0) >= category_cap
+            or (event.source_kind == "filing" and filing_count >= filing_cap)
+        )
+        if over_cap:
+            deferred.append(event)
+            continue
+        selected.append(event)
+        source_event_counts[source_id] = source_event_counts.get(source_id, 0) + 1
+        category_counts[event.event_category] = category_counts.get(event.event_category, 0) + 1
+        filing_count += event.source_kind == "filing"
+        if len(selected) >= limit:
+            break
+    if len(selected) < limit:
+        selected.extend(deferred[: limit - len(selected)])
+    source_ids = {
+        reference.source_id
+        for event in selected
+        for reference in event.corroborating_sources
+    }
+    verified_count = sum(
+        event.verification_status == "five-source" for event in selected
+    )
+    verification = NewsVerification(
+        raw_article_count=len(items),
+        event_count=len(selected),
+        five_source_verified_count=verified_count,
+        official_primary_count=sum(
+            event.official_source_count > 0 for event in selected
+        ),
+        corroborated_count=sum(event.verification_count >= 2 for event in selected),
+        independent_source_count=len(source_ids),
+        verified_event_ratio=round(verified_count / len(selected), 6) if selected else 0.0,
+    )
+    return tuple(selected), verification
+
+
 def fetch_online_news(
     market: str,
     symbol: str,
@@ -784,10 +1296,23 @@ def fetch_online_news(
                     normalized_symbol, provider_limit
                 ),
             ),
+            (
+                "gdelt",
+                "GDELT 全球新闻索引",
+                "https://www.gdeltproject.org/",
+                "aggregator",
+                "跨媒体原始报道索引",
+                lambda: _fetch_gdelt_news(
+                    normalized_symbol, company, provider_limit, per_request_timeout
+                ),
+            ),
         )
         source_portals = (
             {"label": "巨潮资讯", "url": "https://www.cninfo.com.cn/", "kind": "法定披露"},
+            {"label": "上交所", "url": "https://www.sse.com.cn/disclosure/listedinfo/announcement/", "kind": "交易所披露"},
+            {"label": "深交所", "url": "https://www.szse.cn/disclosure/notice/company/index.html", "kind": "交易所披露"},
             {"label": "东方财富", "url": "https://finance.eastmoney.com/", "kind": "财经媒体"},
+            {"label": "GDELT", "url": "https://www.gdeltproject.org/", "kind": "跨媒体索引"},
         )
     elif normalized_market == "nasdaq":
         query = f"{company} {normalized_symbol} stock"
@@ -806,8 +1331,8 @@ def fetch_online_news(
                 "nasdaq-rss",
                 "Nasdaq 官方 RSS",
                 "https://www.nasdaq.com/nasdaq-rss-feeds",
-                "exchange",
-                "交易所官方",
+                "exchange-media",
+                "交易所新闻频道",
                 lambda: _fetch_nasdaq_news(
                     normalized_symbol, provider_limit, per_request_timeout
                 ),
@@ -822,11 +1347,22 @@ def fetch_online_news(
                     normalized_symbol, provider_limit, per_request_timeout
                 ),
             ),
+            (
+                "gdelt",
+                "GDELT 全球新闻索引",
+                "https://www.gdeltproject.org/",
+                "aggregator",
+                "跨媒体原始报道索引",
+                lambda: _fetch_gdelt_news(
+                    normalized_symbol, company, provider_limit, per_request_timeout
+                ),
+            ),
         )
         source_portals = (
             {"label": "SEC EDGAR", "url": "https://www.sec.gov/edgar/search/", "kind": "监管披露"},
             {"label": "Nasdaq", "url": "https://www.nasdaq.com/nasdaq-rss-feeds", "kind": "交易所"},
             {"label": "Yahoo Finance", "url": "https://finance.yahoo.com/", "kind": "财经媒体"},
+            {"label": "GDELT", "url": "https://www.gdeltproject.org/", "kind": "跨媒体索引"},
         )
     elif normalized_market == "hk":
         query = f"{company} {normalized_symbol} Hong Kong stock"
@@ -851,10 +1387,21 @@ def fetch_online_news(
                     normalized_symbol, provider_limit, per_request_timeout
                 ),
             ),
+            (
+                "gdelt",
+                "GDELT 全球新闻索引",
+                "https://www.gdeltproject.org/",
+                "aggregator",
+                "跨媒体原始报道索引",
+                lambda: _fetch_gdelt_news(
+                    normalized_symbol, company, provider_limit, per_request_timeout
+                ),
+            ),
         )
         source_portals = (
             {"label": "HKEXnews", "url": "https://www.hkexnews.hk/", "kind": "交易所披露"},
             {"label": "Yahoo Finance", "url": "https://finance.yahoo.com/", "kind": "财经媒体"},
+            {"label": "GDELT", "url": "https://www.gdeltproject.org/", "kind": "跨媒体索引"},
         )
     elif normalized_market == "global":
         query = f"{company} {normalized_symbol} stock ETF"
@@ -869,10 +1416,21 @@ def fetch_online_news(
                     normalized_symbol, provider_limit, per_request_timeout
                 ),
             ),
+            (
+                "gdelt",
+                "GDELT 全球新闻索引",
+                "https://www.gdeltproject.org/",
+                "aggregator",
+                "跨媒体原始报道索引",
+                lambda: _fetch_gdelt_news(
+                    normalized_symbol, company, provider_limit, per_request_timeout
+                ),
+            ),
         )
         source_portals = (
             {"label": "Yahoo Finance", "url": "https://finance.yahoo.com/", "kind": "国际财经媒体"},
             {"label": "Microsoft Finance", "url": "https://www.msn.com/en-us/money", "kind": "行情与公司资料"},
+            {"label": "GDELT", "url": "https://www.gdeltproject.org/", "kind": "跨媒体索引"},
         )
     else:
         return NewsFeed(
@@ -974,20 +1532,21 @@ def fetch_online_news(
             )
         )
 
-    deduplicated = _deduplicate(
+    aggregated, verification = _aggregate_events(
         collected,
         bounded_limit,
         relevance_terms=_relevance_terms(normalized_symbol, company),
     )
-    if not deduplicated and not warnings:
+    if not aggregated and not warnings:
         warnings.append("在线新闻源暂未返回该标的的相关新闻。")
     return NewsFeed(
         market=normalized_market,
         symbol=normalized_symbol,
         query=query,
-        items=deduplicated,
+        items=aggregated,
         providers=tuple(statuses),
         warnings=tuple(warnings),
         fetched_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         source_portals=source_portals,
+        verification=verification,
     )

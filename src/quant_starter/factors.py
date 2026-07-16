@@ -66,6 +66,8 @@ class FactorMiningResult:
     category: str = ""
     reference_title: str = ""
     reference_url: str = ""
+    fold_information_coefficients: tuple[float, ...] = ()
+    stability_score: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -97,19 +99,19 @@ class CompositeResearch:
 
 
 FACTOR_WEIGHTS = {
-    "trend_alignment": 0.09,
-    "trend_slope": 0.06,
+    "trend_alignment": 0.08,
+    "trend_slope": 0.05,
     "momentum_5d": 0.04,
-    "momentum_20d": 0.07,
-    "momentum_60d": 0.06,
-    "breakout_20d": 0.06,
+    "momentum_20d": 0.06,
+    "momentum_60d": 0.05,
+    "breakout_20d": 0.05,
     "rsi_reversal": 0.05,
     "bollinger_reversal": 0.05,
-    "volatility_quality": 0.06,
-    "drawdown_quality": 0.06,
-    "volume_confirmation": 0.05,
+    "volatility_quality": 0.05,
+    "drawdown_quality": 0.05,
+    "volume_confirmation": 0.04,
     "obv_trend": 0.04,
-    "relative_strength": 0.04,
+    "relative_strength": 0.03,
     "momentum_12_1": 0.05,
     "amihud_liquidity": 0.04,
     "parkinson_quality": 0.04,
@@ -118,6 +120,12 @@ FACTOR_WEIGHTS = {
     "directional_movement": 0.03,
     "overnight_strength": 0.02,
     "intraday_strength": 0.02,
+    "momentum_vol_adjusted": 0.015,
+    "trend_efficiency": 0.015,
+    "high_52w_proximity": 0.015,
+    "expected_shortfall_quality": 0.015,
+    "ulcer_quality": 0.015,
+    "gap_risk_quality": 0.015,
 }
 
 
@@ -183,6 +191,54 @@ FACTOR_REFERENCE_CATALOG: dict[str, dict[str, Any]] = {
         "category": "时段结构",
         "history_required": 30,
         "formula": "prod(Close(t) / Open(t), 20) - 1",
+        "reference_title": "Berkman et al. (2012) Paying Attention",
+        "reference_url": "https://doi.org/10.1017/S0022109012000270",
+    },
+    "momentum_vol_adjusted": {
+        "name": "波动调整动量",
+        "category": "动量",
+        "history_required": 126,
+        "formula": "R(63) / annualized_volatility(63)",
+        "reference_title": "Moreira & Muir (2017) Volatility-Managed Portfolios",
+        "reference_url": "https://www.nber.org/papers/w22208",
+    },
+    "trend_efficiency": {
+        "name": "趋势效率",
+        "category": "趋势",
+        "history_required": 40,
+        "formula": "(P(t)-P(t-20)) / sum(|delta P|, 20)",
+        "reference_title": "Kaufman efficiency-ratio trend filter",
+        "reference_url": "https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-overlays/kaufmans-adaptive-moving-average-kama",
+    },
+    "high_52w_proximity": {
+        "name": "52周高点接近度",
+        "category": "突破",
+        "history_required": 253,
+        "formula": "P(t) / max(P, 252) - 1",
+        "reference_title": "George & Hwang (2004) The 52-Week High and Momentum Investing",
+        "reference_url": "https://doi.org/10.1111/j.1540-6261.2004.00695.x",
+    },
+    "expected_shortfall_quality": {
+        "name": "期望损失质量",
+        "category": "风险",
+        "history_required": 126,
+        "formula": "-mean(R | R <= quantile(R, 5%), 63) * sqrt(252)",
+        "reference_title": "Basel Committee Minimum Capital Requirements for Market Risk",
+        "reference_url": "https://www.bis.org/bcbs/publ/d457.htm",
+    },
+    "ulcer_quality": {
+        "name": "持续回撤质量",
+        "category": "风险",
+        "history_required": 126,
+        "formula": "sqrt(mean((P / rolling_max(P, 63) - 1)^2, 63))",
+        "reference_title": "Martin & McCann Ulcer Index downside-risk framework",
+        "reference_url": "https://doi.org/10.1007/s00291-023-00719-x",
+    },
+    "gap_risk_quality": {
+        "name": "隔夜跳空风险",
+        "category": "风险",
+        "history_required": 60,
+        "formula": "std(Open(t) / Close(t-1) - 1, 20) * sqrt(252)",
         "reference_title": "Berkman et al. (2012) Paying Attention",
         "reference_url": "https://doi.org/10.1017/S0022109012000270",
     },
@@ -442,6 +498,44 @@ def calculate_factor_signals(
     downside_percentile = _rolling_percentile(
         downside_series, downside_volatility
     )
+    volatility_63 = returns.rolling(63).std(ddof=0).mul(math.sqrt(252))
+    momentum_vol_series = close.pct_change(63).div(
+        volatility_63.replace(0, np.nan)
+    )
+    momentum_vol_adjusted = _latest(momentum_vol_series)
+    momentum_vol_available = len(close) >= 126 and math.isfinite(momentum_vol_adjusted)
+
+    path_length_20 = close.diff().abs().rolling(20).sum()
+    trend_efficiency_series = close.diff(20).div(path_length_20.replace(0, np.nan))
+    trend_efficiency = _latest(trend_efficiency_series)
+
+    high_52w_available = len(close) >= 253
+    high_52w_series = close.div(close.rolling(252).max()).sub(1)
+    high_52w_proximity = _latest(high_52w_series) if high_52w_available else 0.0
+
+    def expected_shortfall(window: np.ndarray) -> float:
+        finite = window[np.isfinite(window)]
+        if len(finite) < 20:
+            return np.nan
+        threshold = float(np.quantile(finite, 0.05))
+        tail = finite[finite <= threshold]
+        return float(-tail.mean() * math.sqrt(252)) if len(tail) else np.nan
+
+    expected_shortfall_series = returns.rolling(63).apply(
+        expected_shortfall,
+        raw=True,
+    )
+    expected_shortfall_value = _latest(expected_shortfall_series)
+    expected_shortfall_available = len(close) >= 126
+    expected_shortfall_percentile = _rolling_percentile(
+        expected_shortfall_series, expected_shortfall_value
+    )
+
+    drawdown_63 = close.div(close.rolling(63).max()).sub(1)
+    ulcer_series = drawdown_63.pow(2).rolling(63).mean().pow(0.5)
+    ulcer_value = _latest(ulcer_series)
+    ulcer_available = len(close) >= 126
+    ulcer_percentile = _rolling_percentile(ulcer_series, ulcer_value)
     high20 = _latest(high.rolling(20).max(), _latest(high))
     low20 = _latest(low.rolling(20).min(), _latest(low))
     close_latest = _latest(close)
@@ -471,6 +565,10 @@ def calculate_factor_signals(
     intraday_strength = _latest(intraday_series)
     overnight_available = int(overnight_returns.tail(30).notna().sum()) >= 20
     intraday_available = int(intraday_returns.tail(30).notna().sum()) >= 20
+    gap_risk_series = overnight_returns.rolling(20).std(ddof=0).mul(math.sqrt(252))
+    gap_risk = _latest(gap_risk_series)
+    gap_risk_available = int(overnight_returns.tail(60).notna().sum()) >= 40
+    gap_risk_percentile = _rolling_percentile(gap_risk_series, gap_risk)
 
     if benchmark is not None:
         benchmark_close = pd.to_numeric(benchmark, errors="coerce").dropna()
@@ -513,6 +611,14 @@ def calculate_factor_signals(
             "用 +DI、-DI 与 ADX 同时衡量趋势方向和强度。",
         ),
         _factor_signal(
+            "trend_efficiency",
+            "趋势效率",
+            "趋势",
+            trend_efficiency,
+            trend_efficiency * 105,
+            "比较 20 日净位移与逐日路径长度，降低震荡噪声对趋势判断的干扰。",
+        ),
+        _factor_signal(
             "momentum_5d",
             "5日动量",
             "动量",
@@ -535,6 +641,19 @@ def calculate_factor_signals(
             ret60,
             ret60 * 300,
             "近 60 个交易日收益率。",
+        ),
+        _factor_signal(
+            "momentum_vol_adjusted",
+            "波动调整动量",
+            "动量",
+            momentum_vol_adjusted,
+            momentum_vol_adjusted * 135,
+            (
+                "用 63 日年化波动调整同期收益，避免高波动上涨获得过高动量分。"
+                if momentum_vol_available
+                else "需要至少 126 根 K 线以估计更稳定的波动调整动量。"
+            ),
+            available=momentum_vol_available,
         ),
         _factor_signal(
             "momentum_12_1",
@@ -564,6 +683,19 @@ def calculate_factor_signals(
             breakout_position,
             (breakout_position - 0.5) * 180,
             "现价在近 20 日高低区间中的位置。",
+        ),
+        _factor_signal(
+            "high_52w_proximity",
+            "52周高点接近度",
+            "突破",
+            high_52w_proximity,
+            (high_52w_proximity + 0.12) * 400,
+            (
+                "衡量现价距离过去 252 个交易日最高收盘价的幅度。"
+                if high_52w_available
+                else "需要至少 253 根 K 线，当前明确标记为数据不足。"
+            ),
+            available=high_52w_available,
         ),
         _factor_signal(
             "rsi_reversal",
@@ -612,6 +744,24 @@ def calculate_factor_signals(
             downside_volatility,
             (0.5 - downside_percentile) * 160,
             "只统计负收益的年化下行波动，低历史分位得分更高。",
+        ),
+        _factor_signal(
+            "expected_shortfall_quality",
+            "期望损失质量",
+            "风险",
+            expected_shortfall_value,
+            (0.5 - expected_shortfall_percentile) * 170,
+            "统计 63 日最差 5% 收益的平均损失，低历史分位得分更高。",
+            available=expected_shortfall_available,
+        ),
+        _factor_signal(
+            "ulcer_quality",
+            "持续回撤质量",
+            "风险",
+            ulcer_value,
+            (0.5 - ulcer_percentile) * 165,
+            "同时惩罚回撤深度与持续时间，低历史分位得分更高。",
+            available=ulcer_available,
         ),
         _factor_signal(
             "drawdown_quality",
@@ -663,6 +813,15 @@ def calculate_factor_signals(
             intraday_strength * 500,
             "近 20 日开盘到收盘收益的复合强度。",
             available=intraday_available,
+        ),
+        _factor_signal(
+            "gap_risk_quality",
+            "隔夜跳空风险",
+            "风险",
+            gap_risk,
+            (0.5 - gap_risk_percentile) * 160,
+            "近 20 日隔夜收益波动相对自身历史分位，低跳空风险得分更高。",
+            available=gap_risk_available,
         ),
     )
     return signals
@@ -755,24 +914,31 @@ def build_strategy_signals(
     raw = {
         "trend": blend(
             (
-                ("trend_alignment", 0.42),
-                ("trend_slope", 0.28),
-                ("directional_movement", 0.30),
+                ("trend_alignment", 0.34),
+                ("trend_slope", 0.22),
+                ("directional_movement", 0.28),
+                ("trend_efficiency", 0.16),
             )
         ),
         "momentum": blend(
             (
-                ("momentum_5d", 0.12),
-                ("momentum_20d", 0.26),
-                ("momentum_60d", 0.18),
-                ("momentum_12_1", 0.18),
+                ("momentum_5d", 0.08),
+                ("momentum_20d", 0.20),
+                ("momentum_60d", 0.14),
+                ("momentum_12_1", 0.16),
+                ("momentum_vol_adjusted", 0.16),
                 ("relative_strength", 0.10),
-                ("overnight_strength", 0.08),
-                ("intraday_strength", 0.08),
+                ("high_52w_proximity", 0.08),
+                ("overnight_strength", 0.04),
+                ("intraday_strength", 0.04),
             )
         ),
         "breakout": blend(
-            (("breakout_20d", 0.68), ("volume_confirmation", 0.32))
+            (
+                ("breakout_20d", 0.50),
+                ("high_52w_proximity", 0.25),
+                ("volume_confirmation", 0.25),
+            )
         ),
         "mean_reversion": blend(
             (
@@ -792,9 +958,9 @@ def build_strategy_signals(
     }
     weights = _strategy_weights(regime)
     rationales = {
-        "trend": "融合均线排列、对数斜率与 ADX 方向强度。",
-        "momentum": "融合短中长期、12-1 月及隔夜/日内动量。",
-        "breakout": "观察区间突破位置与成交量确认。",
+        "trend": "融合均线排列、对数斜率、ADX 与路径效率。",
+        "momentum": "融合多周期、波动调整、52 周高点及相对强弱动量。",
+        "breakout": "观察 20 日区间、52 周高点位置与成交量确认。",
         "mean_reversion": "根据 RSI、布林偏离与 MFI 寻找反转条件。",
         "volume_price": "用量能、OBV、MFI 与流动性共同验证价格信号。",
     }
@@ -837,6 +1003,30 @@ def mine_time_series_factors(
     amihud = returns.abs().div(dollar_volume.replace(0, np.nan)).rolling(20).mean()
     overnight = _rolling_compound(open_price.div(close.shift(1)).sub(1))
     intraday = _rolling_compound(close.div(open_price.replace(0, np.nan)).sub(1))
+    volatility_63 = returns.rolling(63).std(ddof=0).mul(math.sqrt(252))
+    momentum_vol_adjusted = close.pct_change(63).div(
+        volatility_63.replace(0, np.nan)
+    )
+    trend_efficiency = close.diff(20).div(
+        close.diff().abs().rolling(20).sum().replace(0, np.nan)
+    )
+    high_52w_proximity = close.div(close.rolling(252).max()).sub(1)
+
+    def rolling_expected_shortfall(window: np.ndarray) -> float:
+        finite = window[np.isfinite(window)]
+        if len(finite) < 20:
+            return np.nan
+        threshold = float(np.quantile(finite, 0.05))
+        tail = finite[finite <= threshold]
+        return float(-tail.mean()) if len(tail) else np.nan
+
+    expected_shortfall = returns.rolling(63).apply(
+        rolling_expected_shortfall,
+        raw=True,
+    )
+    drawdown_63 = close.div(close.rolling(63).max()).sub(1)
+    ulcer_index = drawdown_63.pow(2).rolling(63).mean().pow(0.5)
+    gap_risk = open_price.div(close.shift(1)).sub(1).rolling(20).std(ddof=0)
     factors = {
         "momentum_20d": ("20日动量", close.pct_change(20)),
         "momentum_12_1": (
@@ -870,6 +1060,12 @@ def mine_time_series_factors(
             "20日突破",
             close.div(close.rolling(20).max()).sub(1),
         ),
+        "momentum_vol_adjusted": ("波动调整动量", momentum_vol_adjusted),
+        "trend_efficiency": ("趋势效率", trend_efficiency),
+        "high_52w_proximity": ("52周高点接近度", high_52w_proximity),
+        "expected_shortfall_quality": ("期望损失质量", -expected_shortfall),
+        "ulcer_quality": ("持续回撤质量", -ulcer_index),
+        "gap_risk_quality": ("隔夜跳空风险", -gap_risk),
     }
     forward = close.shift(-horizon_days).div(close).sub(1).rename("forward")
     results: list[FactorMiningResult] = []
@@ -890,6 +1086,39 @@ def mine_time_series_factors(
             if len(nonzero)
             else 0.5
         )
+        fold_ics: list[float] = []
+        fold_size = math.ceil(len(sample) / 3)
+        for fold_index in range(3):
+            fold = sample.iloc[
+                fold_index * fold_size : min((fold_index + 1) * fold_size, len(sample))
+            ]
+            if len(fold) < 20:
+                continue
+            fold_ic = float(
+                fold["factor"].rank(method="average").corr(
+                    fold["forward"].rank(method="average")
+                )
+            )
+            if math.isfinite(fold_ic):
+                fold_ics.append(fold_ic)
+        meaningful_signs = [np.sign(value) for value in fold_ics if abs(value) >= 0.01]
+        sign_consistency = (
+            max(0.0, float(np.mean(meaningful_signs))) if meaningful_signs else 0.0
+        )
+        magnitude = min(1.0, max(ic, 0.0) / 0.08)
+        dispersion = max(
+            0.0,
+            1.0 - (float(np.std(fold_ics)) / 0.12 if fold_ics else 1.0),
+        )
+        sample_strength = min(1.0, len(sample) / 252)
+        stability_score = 100 * (
+            0.45 * sign_consistency
+            + 0.30 * magnitude
+            + 0.15 * dispersion
+            + 0.10 * sample_strength
+        )
+        if len(fold_ics) < 2:
+            stability_score *= 0.6
         results.append(
             FactorMiningResult(
                 key=key,
@@ -906,6 +1135,10 @@ def mine_time_series_factors(
                 reference_url=str(
                     FACTOR_REFERENCE_CATALOG.get(key, {}).get("reference_url", "")
                 ),
+                fold_information_coefficients=tuple(
+                    round(value, 4) for value in fold_ics
+                ),
+                stability_score=round(stability_score, 1),
             )
         )
     return tuple(sorted(results, key=lambda item: abs(item.information_coefficient), reverse=True))
@@ -933,7 +1166,12 @@ def build_factor_history(
             {
                 "date": timestamp.strftime("%Y-%m-%d"),
                 "trend": category_score(
-                    ("trend_alignment", "trend_slope", "directional_movement")
+                    (
+                        "trend_alignment",
+                        "trend_slope",
+                        "directional_movement",
+                        "trend_efficiency",
+                    )
                 ),
                 "momentum": category_score(
                     (
@@ -943,6 +1181,8 @@ def build_factor_history(
                         "momentum_12_1",
                         "relative_strength",
                         "breakout_20d",
+                        "momentum_vol_adjusted",
+                        "high_52w_proximity",
                     )
                 ),
                 "reversal": category_score(
@@ -954,6 +1194,9 @@ def build_factor_history(
                         "parkinson_quality",
                         "downside_quality",
                         "drawdown_quality",
+                        "expected_shortfall_quality",
+                        "ulcer_quality",
+                        "gap_risk_quality",
                     )
                 ),
                 "liquidity": category_score(("amihud_liquidity",)),
@@ -976,6 +1219,7 @@ def analyze_composite(
     factors = calculate_factor_signals(frame, benchmark)
     regime = detect_market_regime(frame)
     strategies = build_strategy_signals(factors, regime)
+    mining = mine_time_series_factors(frame)
     composite_score = _clip(sum(item.score * item.weight for item in strategies))
 
     directional = [np.sign(item.score) for item in strategies if abs(item.score) >= 20]
@@ -993,16 +1237,29 @@ def analyze_composite(
     )
     downside_volatility = max(risk_factors["downside_quality"].value, 0.0)
     drawdown = min(risk_factors["drawdown_quality"].value, 0.0)
+    expected_shortfall = max(
+        risk_factors["expected_shortfall_quality"].value,
+        0.0,
+    )
+    ulcer_index = max(risk_factors["ulcer_quality"].value, 0.0)
+    gap_risk = max(risk_factors["gap_risk_quality"].value, 0.0)
     risk_penalty = max(0.0, -risk_factors["volatility_quality"].score) * 0.10
     risk_penalty += max(0.0, -risk_factors["parkinson_quality"].score) * 0.05
     risk_penalty += max(0.0, -risk_factors["downside_quality"].score) * 0.08
     risk_penalty += max(0.0, -risk_factors["drawdown_quality"].score) * 0.08
     risk_penalty += max(0.0, -risk_factors["amihud_liquidity"].score) * 0.04
+    risk_penalty += max(0.0, -risk_factors["expected_shortfall_quality"].score) * 0.06
+    risk_penalty += max(0.0, -risk_factors["ulcer_quality"].score) * 0.05
+    risk_penalty += max(0.0, -risk_factors["gap_risk_quality"].score) * 0.04
+    stability_values = [
+        item.stability_score for item in mining if item.observations >= 80
+    ]
+    factor_stability = (
+        float(np.median(stability_values)) / 100 if stability_values else 0.35
+    )
+    raw_confidence = 42 + abs(composite_score) * 0.35 + agreement * 26 - risk_penalty
     confidence = int(
-        max(
-            35,
-            min(92, 42 + abs(composite_score) * 0.35 + agreement * 26 - risk_penalty),
-        )
+        max(18, min(90, raw_confidence * (0.62 + 0.38 * factor_stability)))
     )
 
     if composite_score <= 0:
@@ -1020,13 +1277,19 @@ def analyze_composite(
         min(1.0, 1 + risk_factors["amihud_liquidity"].score / 180),
     )
     regime_scale = 0.65 if regime.key == "high_volatility" else 1.0
+    tail_scale = max(0.40, min(1.0, 0.32 / max(expected_shortfall, 0.05)))
+    ulcer_scale = max(0.45, min(1.0, 0.12 / max(ulcer_index, 0.02)))
+    gap_scale = max(0.65, min(1.0, 0.18 / max(gap_risk, 0.03)))
     target_position = round(
         base_position
         * volatility_scale
         * downside_scale
         * drawdown_scale
         * liquidity_scale
-        * regime_scale,
+        * regime_scale
+        * tail_scale
+        * ulcer_scale
+        * gap_scale,
         4,
     )
 
@@ -1049,6 +1312,9 @@ def analyze_composite(
         or downside_volatility >= 0.35
         or drawdown <= -0.4
         or liquidity_score <= -65
+        or expected_shortfall >= 0.55
+        or ulcer_index >= 0.25
+        or gap_risk >= 0.45
     ):
         risk_level = "高"
     elif (
@@ -1056,17 +1322,20 @@ def analyze_composite(
         or downside_volatility >= 0.2
         or drawdown <= -0.22
         or liquidity_score <= -35
+        or expected_shortfall >= 0.35
+        or ulcer_index >= 0.12
+        or gap_risk >= 0.25
     ):
         risk_level = "中"
     else:
         risk_level = "低"
 
-    mining = mine_time_series_factors(frame)
     action = _action(composite_score)
     label = _action_label(composite_score)
     summary = (
         f"当前处于{regime.name}，多策略综合得分 {composite_score:+.1f}，"
-        f"一致度 {agreement:.0%}；建议目标仓位 {target_position:.0%}，"
+        f"一致度 {agreement:.0%}，历史分段稳定度 {factor_stability:.0%}；"
+        f"建议目标仓位 {target_position:.0%}，"
         f"风险等级{risk_level}。"
     )
     return CompositeResearch(

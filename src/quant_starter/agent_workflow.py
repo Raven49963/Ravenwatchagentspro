@@ -407,9 +407,9 @@ class RavenWatchAgentsWorkflow:
 
         role_focus = {
             "market": "只依据价格、均线、RSI、MACD、波动率、回撤和成交量评估趋势与关键风险。",
-            "sentiment": "依据新闻标题和信息可得性评估短期情绪；没有数据时必须明确说不知道。",
-            "news": "评估公司新闻、行业事件与宏观冲击，不得编造不存在的事件。",
-            "fundamentals": "评估估值、盈利质量、增长和杠杆；缺失字段不得猜测。",
+            "sentiment": "依据新闻标题和来源核验度评估短期情绪；单源消息必须降权，没有数据时明确说不知道。",
+            "news": "评估公司新闻、公告、行业事件与宏观冲击；五源验证和官方原文可作为强证据，低于五源必须标注待核，不得编造事件。",
+            "fundamentals": "评估估值、盈利质量、现金流、增长和杠杆；优先使用字段来源、跨源一致度和报告期质量，缺失或冲突字段不得猜测。",
         }[analyst_id]
         return self._online_report(
             agent_id=analyst_id,
@@ -624,7 +624,15 @@ class RavenWatchAgentsWorkflow:
             )
 
         if analyst_id in {"sentiment", "news"}:
-            headlines = [item.get("title", "") for item in context.news if item.get("title")]
+            headlines = [
+                (
+                    f"[{item.get('verification_count', 1)}源"
+                    f"{'/官方' if item.get('source_kind') in {'filing', 'exchange'} else ''}] "
+                    f"{item.get('title', '')}"
+                )
+                for item in context.news
+                if item.get("title")
+            ]
             sentiment = self._headline_sentiment(headlines)
             title = "市场情绪" if analyst_id == "sentiment" else "新闻与事件"
             return self._markdown_report(
@@ -637,7 +645,19 @@ class RavenWatchAgentsWorkflow:
             )
 
         fundamentals = context.fundamentals
-        rows = [f"{key}: {value}" for key, value in list(fundamentals.items())[:14]]
+        rows = [
+            f"{key}: {value}"
+            for key, value in fundamentals.items()
+            if not str(key).startswith("_")
+        ][:14]
+        quality = fundamentals.get("_evidence_quality") or {}
+        if quality:
+            rows.insert(
+                0,
+                "数据质量: "
+                f"{quality.get('label', '待核')} {quality.get('score', '--')} / "
+                f"跨源一致 {float(quality.get('cross_source_agreement', 0)):.0%}",
+            )
         return self._markdown_report(
             "基本面分析",
             [

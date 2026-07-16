@@ -861,7 +861,7 @@ class MarketService:
             bars.attrs.get("provider")
         )
         fundamentals: dict[str, Any] = {}
-        news: list[dict[str, str]] = []
+        news: list[dict[str, Any]] = []
         warnings: list[str] = []
         if options.fetch_details:
             fundamentals, news, evidence_warnings = fetch_research_evidence(
@@ -878,6 +878,22 @@ class MarketService:
                         "publisher": item["publisher"],
                         "published": item["published_at"],
                         "url": item["url"],
+                        "summary": item.get("summary", ""),
+                        "source_kind": item.get("source_kind", "media"),
+                        "verification_status": item.get(
+                            "verification_status", "single-source"
+                        ),
+                        "verification_count": item.get("verification_count", 1),
+                        "verification_score": item.get("verification_score", 0),
+                        "sources": [
+                            {
+                                "publisher": source.get("publisher", ""),
+                                "title": source.get("title", ""),
+                                "url": source.get("url", ""),
+                                "official": source.get("official", False),
+                            }
+                            for source in item.get("corroborating_sources", [])[:8]
+                        ],
                     }
                     for item in online_feed.get("items", [])
                 ]
@@ -932,7 +948,9 @@ class MarketService:
                 ),
             },
             "evidence": {
-                "fundamental_fields": len(fundamentals),
+                "fundamental_fields": sum(
+                    not str(key).startswith("_") for key in fundamentals
+                ),
                 "news_items": len(news),
             },
             "warnings": result.warnings,
@@ -1056,7 +1074,7 @@ class EvidenceRequest(QuantValidationRequest):
 
 app = FastAPI(
     title="Raven Watch Agents Pro API",
-    version="1.7.0",
+    version="1.8.0",
     description="四市场实时行情、参数化样本外验证、新闻基本面与 DeepSeek V4 多智能体在线研判服务。",
 )
 

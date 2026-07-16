@@ -48,9 +48,9 @@ class FundamentalScoringTests(unittest.TestCase):
         result = assess_fundamentals(snapshot)
         self.assertTrue(result["available"])
         self.assertEqual(result["available_metrics"], 9)
-        self.assertEqual(result["total_metrics"], 10)
-        self.assertGreater(result["coverage"], 0.85)
-        self.assertGreater(result["confidence"], 80)
+        self.assertEqual(result["total_metrics"], 16)
+        self.assertGreater(result["coverage"], 0.5)
+        self.assertGreater(result["confidence"], 60)
         price_to_book = next(
             metric for metric in result["metrics"] if metric["key"] == "price_to_book"
         )
@@ -68,6 +68,10 @@ class FundamentalScoringTests(unittest.TestCase):
                 "quant_starter.research_data._a_share_financials",
                 side_effect=ConnectionError("financial source offline"),
             ),
+            mock.patch(
+                "quant_starter.research_data._eastmoney_financial_analysis",
+                return_value={},
+            ),
         ):
             snapshot = fetch_fundamental_snapshot(
                 "a-share", "300750", timeout_seconds=2
@@ -77,6 +81,40 @@ class FundamentalScoringTests(unittest.TestCase):
         self.assertEqual(statuses["msn-finance"], "ok")
         self.assertEqual(statuses["sina-financials"], "error")
         self.assertTrue(any("financial source offline" in item for item in snapshot["warnings"]))
+
+    def test_official_value_wins_while_cross_source_conflict_is_preserved(self) -> None:
+        with (
+            mock.patch(
+                "quant_starter.research_data._msn_fundamentals",
+                return_value={"peRatio": 20.0, "_source_url": "https://msn.example/value"},
+            ),
+            mock.patch(
+                "quant_starter.research_data._yfinance_fundamentals",
+                return_value={"profitMargins": 0.30, "_source_url": "https://yahoo.example/value"},
+            ),
+            mock.patch(
+                "quant_starter.research_data._eastmoney_financial_analysis",
+                return_value={"profitMargins": 0.10, "reportDate": "2026-03-31"},
+            ),
+            mock.patch(
+                "quant_starter.research_data._nasdaq_official_fundamentals",
+                return_value={"profitMargins": 0.20, "reportDate": "2026-03-31"},
+            ),
+            mock.patch(
+                "quant_starter.research_data._sec_company_fundamentals",
+                return_value={"profitMargins": 0.21, "reportDate": "2026-03-31"},
+            ),
+        ):
+            snapshot = fetch_fundamental_snapshot(
+                "nasdaq", "TEST", timeout_seconds=2
+            ).to_dict()
+        self.assertAlmostEqual(snapshot["fields"]["profitMargins"], 0.21)
+        self.assertEqual(snapshot["field_sources"]["profitMargins"], "SEC XBRL Company Facts")
+        self.assertEqual(len(snapshot["field_evidence"]["profitMargins"]), 4)
+        metric_quality = snapshot["quality"]["metric_quality"]["profit_margin"]
+        self.assertEqual(metric_quality["source_count"], 4)
+        self.assertLess(metric_quality["agreement"], 0.8)
+        self.assertTrue(any("跨源偏差" in warning for warning in snapshot["warnings"]))
 
     def test_nasdaq_official_financials_are_normalized(self) -> None:
         payload = {
@@ -114,6 +152,39 @@ class FundamentalScoringTests(unittest.TestCase):
 
 
 class NewsAndCompositeEvidenceTests(unittest.TestCase):
+    def test_news_confidence_rewards_verified_sources_without_inflating_events(self) -> None:
+        base_item = {
+            "title": "Company raises earnings guidance",
+            "summary": "profit growth",
+            "published_at": "2026-07-15T12:00:00+00:00",
+            "source_kind": "media",
+            "credibility": "财经媒体",
+        }
+        single = assess_news(
+            {
+                "items": [{**base_item, "verification_count": 1, "verification_score": 25}],
+                "providers": [{"status": "ok"}],
+            },
+            now=datetime(2026, 7, 16, tzinfo=timezone.utc),
+        )
+        verified = assess_news(
+            {
+                "items": [
+                    {
+                        **base_item,
+                        "verification_count": 5,
+                        "verification_score": 88,
+                        "verification_status": "five-source",
+                    }
+                ],
+                "providers": [{"status": "ok"}],
+            },
+            now=datetime(2026, 7, 16, tzinfo=timezone.utc),
+        )
+        self.assertEqual(single["article_count"], verified["article_count"])
+        self.assertGreater(verified["confidence"], single["confidence"])
+        self.assertEqual(verified["five_source_verified_count"], 1)
+
     def test_recent_official_event_outweighs_old_media_event(self) -> None:
         feed = {
             "items": [

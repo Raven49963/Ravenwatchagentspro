@@ -37,7 +37,7 @@ class ResearchContext:
     bars: pd.DataFrame
     technical: dict[str, float | str | None]
     fundamentals: dict[str, Any] = field(default_factory=dict)
-    news: list[dict[str, str]] = field(default_factory=list)
+    news: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
     def prompt_payload(self) -> dict[str, Any]:
@@ -76,6 +76,8 @@ class FundamentalSnapshot:
     providers: tuple[FundamentalProviderStatus, ...]
     warnings: tuple[str, ...]
     fetched_at: str
+    field_evidence: dict[str, tuple[dict[str, Any], ...]] = field(default_factory=dict)
+    quality: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -86,6 +88,10 @@ class FundamentalSnapshot:
             "providers": [provider.to_dict() for provider in self.providers],
             "warnings": list(self.warnings),
             "fetched_at": self.fetched_at,
+            "field_evidence": {
+                key: list(entries) for key, entries in self.field_evidence.items()
+            },
+            "quality": self.quality,
         }
 
 
@@ -223,10 +229,13 @@ def _yfinance_fundamentals(symbol: str) -> dict[str, Any]:
         "priceToBook",
         "dividendYield",
         "profitMargins",
+        "grossMargins",
+        "operatingMargins",
         "revenueGrowth",
         "earningsGrowth",
         "debtToEquity",
         "returnOnEquity",
+        "returnOnAssets",
         "currentRatio",
         "quickRatio",
         "freeCashflow",
@@ -234,6 +243,14 @@ def _yfinance_fundamentals(symbol: str) -> dict[str, Any]:
         "totalRevenue",
     )
     fields = {key: raw_info.get(key) for key in wanted if raw_info.get(key) is not None}
+    revenue = _number(fields.get("totalRevenue"))
+    free_cash_flow = _number(fields.get("freeCashflow"))
+    operating_cash_flow = _number(fields.get("operatingCashflow"))
+    if revenue not in {None, 0.0}:
+        if free_cash_flow is not None:
+            fields["freeCashFlowMargin"] = free_cash_flow / revenue
+        if operating_cash_flow is not None:
+            fields["operatingCashFlowMargin"] = operating_cash_flow / revenue
     fields["_source_url"] = f"https://finance.yahoo.com/quote/{symbol}"
     return fields
 
@@ -339,6 +356,98 @@ def _a_share_financials(symbol: str) -> dict[str, Any]:
     return {key: value for key, value in fields.items() if value is not None}
 
 
+def _eastmoney_financial_analysis(market: str, symbol: str) -> dict[str, Any]:
+    akshare = __import__("akshare")
+    if market == "a-share":
+        suffix = "SH" if symbol.startswith(("5", "6", "9")) else "BJ" if symbol.startswith(("4", "8")) else "SZ"
+        frame = akshare.stock_financial_analysis_indicator_em(
+            symbol=f"{symbol}.{suffix}",
+            indicator="按报告期",
+        )
+    elif market == "hk":
+        digits = normalize_hk_symbol(symbol).removesuffix(".HK").zfill(5)
+        frame = akshare.stock_financial_hk_analysis_indicator_em(
+            symbol=digits,
+            indicator="报告期",
+        )
+    elif market == "nasdaq":
+        frame = akshare.stock_financial_us_analysis_indicator_em(
+            symbol=symbol,
+            indicator="年报",
+        )
+    else:
+        return {}
+    if frame is None or frame.empty or "REPORT_DATE" not in frame.columns:
+        return {}
+    dates = pd.to_datetime(frame["REPORT_DATE"], errors="coerce")
+    if not dates.notna().any():
+        return {}
+    row = frame.loc[dates.idxmax()]
+
+    def ratio(column: str) -> float | None:
+        value = _number(row.get(column))
+        return value / 100 if value is not None else None
+
+    common = {
+        "reportDate": dates.max().date().isoformat(),
+        "longName": row.get("SECURITY_NAME_ABBR"),
+    }
+    if market == "a-share":
+        common.update(
+            revenueGrowth=ratio("TOTALOPERATEREVETZ"),
+            earningsGrowth=ratio("PARENTNETPROFITTZ"),
+            profitMargins=ratio("XSJLL"),
+            grossMargins=ratio("XSMLL"),
+            returnOnEquity=ratio("ROEJQ"),
+            returnOnAssets=ratio("ZZCJLL"),
+            operatingCashFlowMargin=ratio("JYXJLYYSR"),
+            debtRatio=ratio("ZCFZL"),
+            debtToEquityRatio=ratio("CQBL"),
+            currentRatio=_number(row.get("LD")),
+            quickRatio=_number(row.get("SD")),
+            annualRevenue=_number(row.get("TOTALOPERATEREVE")),
+            annualNetIncome=_number(row.get("PARENTNETPROFIT")),
+            operatingCashFlowPerShare=_number(row.get("MGJYXJJE")),
+            _source_url=f"https://emweb.securities.eastmoney.com/pc_hsf10/pages/index.html?type=web&code={suffix}{symbol}#/cwfx",
+        )
+    elif market == "hk":
+        common.update(
+            revenueGrowth=ratio("OPERATE_INCOME_YOY"),
+            earningsGrowth=ratio("HOLDER_PROFIT_YOY"),
+            profitMargins=ratio("NET_PROFIT_RATIO"),
+            grossMargins=ratio("GROSS_PROFIT_RATIO"),
+            returnOnEquity=ratio("ROE_AVG"),
+            returnOnAssets=ratio("ROA"),
+            operatingCashFlowMargin=ratio("OCF_SALES"),
+            debtRatio=ratio("DEBT_ASSET_RATIO"),
+            currentRatio=_number(row.get("CURRENT_RATIO")),
+            annualRevenue=_number(row.get("OPERATE_INCOME")),
+            annualNetIncome=_number(row.get("HOLDER_PROFIT")),
+            operatingCashFlowPerShare=_number(row.get("PER_NETCASH_OPERATE")),
+            _source_url=f"https://emweb.securities.eastmoney.com/PC_HKF10/NewFinancialAnalysis/index?type=web&code={digits}",
+        )
+    else:
+        common.update(
+            revenueGrowth=ratio("OPERATE_INCOME_YOY"),
+            earningsGrowth=ratio("PARENT_HOLDER_NETPROFIT_YOY"),
+            profitMargins=ratio("NET_PROFIT_RATIO"),
+            grossMargins=ratio("GROSS_PROFIT_RATIO"),
+            returnOnEquity=ratio("ROE_AVG"),
+            returnOnAssets=ratio("ROA"),
+            debtRatio=ratio("DEBT_ASSET_RATIO"),
+            currentRatio=_number(row.get("CURRENT_RATIO")),
+            quickRatio=_number(row.get("SPEED_RATIO")),
+            annualRevenue=_number(row.get("OPERATE_INCOME")),
+            annualNetIncome=_number(row.get("PARENT_HOLDER_NETPROFIT")),
+            _source_url=f"https://emweb.eastmoney.com/PC_USF10/pages/index.html?code={symbol}#/cwfx/zyzb",
+        )
+    return {
+        key: value
+        for key, value in common.items()
+        if value is not None and not (isinstance(value, float) and not np.isfinite(value))
+    }
+
+
 def _sec_company_fundamentals(symbol: str) -> dict[str, Any]:
     lookup = symbol.replace("-", ".").upper()
     company = _sec_company_map().get(lookup) or _sec_company_map().get(symbol.upper())
@@ -386,7 +495,15 @@ def _sec_company_fundamentals(symbol: str) -> dict[str, Any]:
         annual=True,
     )
     net_income = records(("NetIncomeLoss", "ProfitLoss"), annual=True)
+    gross_profit = records(("GrossProfit",), annual=True)
     operating_cash = records(("NetCashProvidedByUsedInOperatingActivities",), annual=True)
+    capital_expenditure = records(
+        (
+            "PaymentsToAcquirePropertyPlantAndEquipment",
+            "PaymentsForAdditionsToPropertyPlantAndEquipment",
+        ),
+        annual=True,
+    )
     assets = records(("Assets",), annual=False)
     liabilities = records(("Liabilities",), annual=False)
     equity = records(
@@ -412,6 +529,8 @@ def _sec_company_fundamentals(symbol: str) -> dict[str, Any]:
     liabilities_value = latest_value(liabilities)
     equity_value = latest_value(equity)
     cash_value = latest_value(operating_cash)
+    gross_profit_value = latest_value(gross_profit)
+    capital_expenditure_value = latest_value(capital_expenditure)
     report_dates = [
         str(rows[-1].get("end"))
         for rows in (revenue, net_income, assets, liabilities, equity)
@@ -423,9 +542,17 @@ def _sec_company_fundamentals(symbol: str) -> dict[str, Any]:
         "revenueGrowth": growth(revenue),
         "earningsGrowth": growth(net_income),
         "profitMargins": income_value / revenue_value if income_value is not None and revenue_value else None,
+        "grossMargins": gross_profit_value / revenue_value if gross_profit_value is not None and revenue_value else None,
         "returnOnEquity": income_value / equity_value if income_value is not None and equity_value else None,
+        "returnOnAssets": income_value / assets_value if income_value is not None and assets_value else None,
         "debtRatio": liabilities_value / assets_value if liabilities_value is not None and assets_value else None,
         "operatingCashFlowMargin": cash_value / revenue_value if cash_value is not None and revenue_value else None,
+        "freeCashFlowMargin": (
+            (cash_value - capital_expenditure_value) / revenue_value
+            if cash_value is not None and capital_expenditure_value is not None and revenue_value
+            else None
+        ),
+        "cashConversion": cash_value / income_value if cash_value is not None and income_value not in {None, 0.0} else None,
         "annualRevenue": revenue_value,
         "annualNetIncome": income_value,
         "totalAssets": assets_value,
@@ -463,6 +590,7 @@ def _nasdaq_official_fundamentals(symbol: str) -> dict[str, Any]:
         return None, None
 
     revenue, previous_revenue = values(income, "Total Revenue")
+    gross_profit, _ = values(income, "Gross Profit")
     net_income, previous_income = values(income, "Net Income")
     assets, _ = values(balance, "Total Assets")
     liabilities, _ = values(balance, "Total Liabilities")
@@ -490,7 +618,9 @@ def _nasdaq_official_fundamentals(symbol: str) -> dict[str, Any]:
         "revenueGrowth": growth(revenue, previous_revenue),
         "earningsGrowth": growth(net_income, previous_income),
         "profitMargins": net_income / revenue if net_income is not None and revenue else None,
+        "grossMargins": gross_profit / revenue if gross_profit is not None and revenue else None,
         "returnOnEquity": net_income / equity if net_income is not None and equity else None,
+        "returnOnAssets": net_income / assets if net_income is not None and assets else None,
         "debtRatio": liabilities / assets if liabilities is not None and assets else None,
         "debtToEquityRatio": total_debt / equity if total_debt and equity else None,
         "currentRatio": current_assets / current_liabilities if current_assets is not None and current_liabilities else None,
@@ -504,6 +634,194 @@ def _nasdaq_official_fundamentals(symbol: str) -> dict[str, Any]:
 
 def _provider_error(error: BaseException) -> str:
     return summarize_error(error, 180)
+
+
+_FUNDAMENTAL_COMPARISON_GROUPS: dict[str, tuple[tuple[str, float], ...]] = {
+    "pe_ttm": (("trailingPE", 1.0), ("peRatio", 1.0)),
+    "price_to_book": (("priceToBook", 1.0), ("pbRatio", 1.0)),
+    "dividend_yield": (("dividendYield", 1.0), ("yieldPercent", 0.01)),
+    "revenue_growth": (("revenueGrowth", 1.0),),
+    "earnings_growth": (("earningsGrowth", 1.0), ("netIncomeGrowth", 1.0)),
+    "profit_margin": (("profitMargins", 1.0), ("netProfitMargin", 1.0)),
+    "gross_margin": (("grossMargins", 1.0),),
+    "return_on_equity": (("returnOnEquity", 1.0), ("roe", 1.0)),
+    "return_on_assets": (("returnOnAssets", 1.0),),
+    "debt_to_equity": (("debtToEquity", 0.01), ("debtToEquityRatio", 1.0)),
+    "debt_ratio": (("debtRatio", 1.0),),
+    "current_ratio": (("currentRatio", 1.0),),
+    "quick_ratio": (("quickRatio", 1.0),),
+    "operating_cash_margin": (("operatingCashFlowMargin", 1.0),),
+    "free_cash_flow_margin": (("freeCashFlowMargin", 1.0),),
+    "cash_conversion": (("cashConversion", 1.0),),
+}
+_MARKET_VALUE_FIELDS = {
+    "marketCap",
+    "trailingPE",
+    "forwardPE",
+    "peRatio",
+    "priceToBook",
+    "pbRatio",
+    "dividendYield",
+    "yieldPercent",
+}
+
+
+def _provider_reliability(source_kind: str, credibility: str) -> float:
+    base = {
+        "regulatory-filing": 1.0,
+        "exchange-data": 0.96,
+        "financial-statement": 0.88,
+        "fundamental-data": 0.76,
+        "market-data": 0.72,
+    }.get(source_kind, 0.68)
+    if any(word in credibility for word in ("监管", "官方", "法定")):
+        base = max(base, 0.95)
+    return base
+
+
+def _field_priority(key: str, source_kind: str, credibility: str) -> float:
+    reliability = _provider_reliability(source_kind, credibility)
+    if key in _MARKET_VALUE_FIELDS:
+        if source_kind == "market-data":
+            return max(reliability, 0.92)
+        if source_kind == "fundamental-data":
+            return max(reliability, 0.86)
+    return reliability
+
+
+def _agreement(values: list[Any], *, floor: float = 0.05) -> float:
+    numeric = [_number(value) for value in values]
+    usable = [value for value in numeric if value is not None]
+    if len(usable) >= 2:
+        median = float(np.median(usable))
+        deviations = [
+            abs(value - median) / max(abs(value), abs(median), floor)
+            for value in usable
+        ]
+        return max(0.0, min(1.0, 1.0 - float(np.mean(deviations)) / 0.35))
+    if len(usable) == 1:
+        return 0.5
+    text_values = [str(value).strip().casefold() for value in values if str(value).strip()]
+    if len(text_values) >= 2:
+        most_common = max(text_values.count(value) for value in set(text_values))
+        return most_common / len(text_values)
+    return 0.5 if text_values else 0.0
+
+
+def _build_fundamental_quality(
+    evidence_by_field: dict[str, list[dict[str, Any]]],
+    merged: dict[str, Any],
+    statuses: list[FundamentalProviderStatus],
+) -> dict[str, Any]:
+    metric_quality: dict[str, dict[str, Any]] = {}
+    agreements: list[float] = []
+    verified_metrics = 0
+    for metric, aliases in _FUNDAMENTAL_COMPARISON_GROUPS.items():
+        entries: list[dict[str, Any]] = []
+        values: list[Any] = []
+        for alias, scale in aliases:
+            for entry in evidence_by_field.get(alias, []):
+                value = _number(entry.get("value"))
+                if value is None:
+                    continue
+                entries.append(entry)
+                values.append(value * scale)
+        unique_providers = {str(entry.get("provider") or "") for entry in entries}
+        source_count = len(unique_providers)
+        agreement = _agreement(values)
+        selected_reliability = max(
+            (float(entry.get("reliability") or 0.0) for entry in entries),
+            default=0.0,
+        )
+        quality_score = round(
+            100
+            * (
+                0.50 * selected_reliability
+                + 0.35 * agreement
+                + 0.15 * min(source_count / 2.0, 1.0)
+            )
+        )
+        if entries:
+            agreements.append(agreement)
+        if source_count >= 2:
+            verified_metrics += 1
+        metric_quality[metric] = {
+            "source_count": source_count,
+            "agreement": round(agreement, 6),
+            "quality_score": quality_score,
+            "official_source_count": sum(
+                float(entry.get("reliability") or 0.0) >= 0.95
+                for entry in entries
+            ),
+        }
+
+    ok_statuses = [status for status in statuses if status.status == "ok"]
+    provider_ratio = len(ok_statuses) / len(statuses) if statuses else 0.0
+    source_trust = (
+        float(
+            np.mean(
+                [
+                    _provider_reliability(status.source_kind, status.credibility)
+                    for status in ok_statuses
+                ]
+            )
+        )
+        if ok_statuses
+        else 0.0
+    )
+    report_date = str(merged.get("reportDate") or "")[:10]
+    age_days: int | None = None
+    freshness = 0.72
+    if report_date:
+        try:
+            age_days = max(
+                0,
+                (datetime.now(timezone.utc).date() - pd.Timestamp(report_date).date()).days,
+            )
+            freshness = max(0.35, min(1.0, 1.0 - max(0, age_days - 120) / 720))
+        except (TypeError, ValueError):
+            freshness = 0.65
+    agreement_mean = float(np.mean(agreements)) if agreements else 0.0
+    comparable_count = sum(
+        bool(metric_quality[metric]["source_count"])
+        for metric in _FUNDAMENTAL_COMPARISON_GROUPS
+    )
+    verification_coverage = (
+        verified_metrics / comparable_count if comparable_count else 0.0
+    )
+    quality_score = round(
+        100
+        * (
+            0.30 * provider_ratio
+            + 0.25 * source_trust
+            + 0.20 * agreement_mean
+            + 0.15 * freshness
+            + 0.10 * verification_coverage
+        )
+    )
+    label = (
+        "高可信"
+        if quality_score >= 80
+        else "较可信"
+        if quality_score >= 65
+        else "需核验"
+        if quality_score >= 45
+        else "证据不足"
+    )
+    return {
+        "score": quality_score,
+        "label": label,
+        "provider_coverage": round(provider_ratio, 6),
+        "source_trust": round(source_trust, 6),
+        "cross_source_agreement": round(agreement_mean, 6),
+        "verified_metric_count": verified_metrics,
+        "comparable_metric_count": comparable_count,
+        "verification_coverage": round(verification_coverage, 6),
+        "report_age_days": age_days,
+        "freshness": round(freshness, 6),
+        "metric_quality": metric_quality,
+        "methodology": "字段级保留来源原值，官方/交易所/财报优先，按跨源偏差、报告期和来源等级计算质量。",
+    }
 
 
 def fetch_fundamental_snapshot(
@@ -560,6 +878,16 @@ def fetch_fundamental_snapshot(
                 "上市公司财务指标",
                 lambda: _a_share_financials(normalized_symbol),
             ),
+            (
+                "eastmoney-financials",
+                "东方财富财务分析",
+                "https://emweb.securities.eastmoney.com/pc_hsf10/pages/index.html#/cwfx",
+                "financial-statement",
+                "公开财务报表指标",
+                lambda: _eastmoney_financial_analysis(
+                    normalized_market, normalized_symbol
+                ),
+            ),
         )
     elif normalized_market in {"nasdaq", "hk", "global"}:
         provider_list: list[tuple[str, str, str, str, str, Any]] = [
@@ -580,6 +908,19 @@ def fetch_fundamental_snapshot(
                 lambda: _yfinance_fundamentals(normalized_symbol),
             ),
         ]
+        if normalized_market in {"nasdaq", "hk"}:
+            provider_list.append(
+                (
+                    "eastmoney-financials",
+                    "东方财富财务分析",
+                    "https://emweb.eastmoney.com/",
+                    "financial-statement",
+                    "公开财务报表指标",
+                    lambda: _eastmoney_financial_analysis(
+                        normalized_market, normalized_symbol
+                    ),
+                )
+            )
         if normalized_market == "nasdaq":
             provider_list.append(
                 (
@@ -643,6 +984,7 @@ def fetch_fundamental_snapshot(
 
     merged: dict[str, Any] = {}
     field_sources: dict[str, str] = {}
+    evidence_by_field: dict[str, list[dict[str, Any]]] = {}
     statuses: list[FundamentalProviderStatus] = []
     warnings: list[str] = []
     for provider, label, source_url, source_kind, credibility, _loader in provider_specs:
@@ -669,8 +1011,18 @@ def fetch_fundamental_snapshot(
         dynamic_url = str(usable.pop("_source_url", "") or source_url)
         usable = {key: value for key, value in usable.items() if value is not None}
         for key, value in usable.items():
-            merged[key] = value
-            field_sources[key] = label
+            reliability = _field_priority(key, source_kind, credibility)
+            evidence_by_field.setdefault(key, []).append(
+                {
+                    "provider": provider,
+                    "label": label,
+                    "value": value,
+                    "source_url": dynamic_url,
+                    "source_kind": source_kind,
+                    "credibility": credibility,
+                    "reliability": round(reliability, 4),
+                }
+            )
         statuses.append(
             FundamentalProviderStatus(
                 provider,
@@ -683,8 +1035,25 @@ def fetch_fundamental_snapshot(
                 credibility,
             )
         )
+    field_evidence: dict[str, tuple[dict[str, Any], ...]] = {}
+    for key, entries in evidence_by_field.items():
+        ordered = sorted(
+            entries,
+            key=lambda entry: (
+                float(entry.get("reliability") or 0.0),
+                str(entry.get("label") or ""),
+            ),
+            reverse=True,
+        )
+        selected = ordered[0]
+        merged[key] = selected["value"]
+        field_sources[key] = str(selected["label"])
+        field_evidence[key] = tuple(ordered)
     if not merged:
         warnings.append("基本面数据为空，本地评分已自动排除该证据。")
+    quality = _build_fundamental_quality(evidence_by_field, merged, statuses)
+    if quality["cross_source_agreement"] < 0.55 and quality["verified_metric_count"]:
+        warnings.append("部分基本面字段跨源偏差较大，本地评分已降低其权重。")
     return FundamentalSnapshot(
         market=normalized_market,
         symbol=normalized_symbol,
@@ -693,6 +1062,8 @@ def fetch_fundamental_snapshot(
         providers=tuple(statuses),
         warnings=tuple(warnings),
         fetched_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        field_evidence=field_evidence,
+        quality=quality,
     )
 
 
@@ -701,7 +1072,7 @@ def fetch_research_evidence(
     symbol: str,
     *,
     timeout_seconds: int = 25,
-) -> tuple[dict[str, Any], list[dict[str, str]], list[str]]:
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
     """Fetch optional company and news evidence without blocking the workflow forever."""
 
     normalized_source = source.strip().lower()
@@ -724,6 +1095,8 @@ def fetch_research_evidence(
             if not isinstance(snapshot, FundamentalSnapshot):
                 raise RuntimeError("基本面快照返回格式无效。")
             fundamentals = dict(snapshot.fields)
+            fundamentals["_evidence_quality"] = snapshot.quality
+            fundamentals["_field_sources"] = snapshot.field_sources
             news: list[dict[str, str]] = []
             warnings.extend(snapshot.warnings)
         else:
