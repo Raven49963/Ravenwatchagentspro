@@ -14,7 +14,7 @@ if (-not (Test-Path $Python)) {
   --noconfirm `
   --clean `
   --windowed `
-  --name TradingAgentsCN `
+  --name RavenWatchAgentsCN `
   --paths src `
   --collect-submodules akshare `
   --collect-data akshare `
@@ -22,7 +22,7 @@ if (-not (Test-Path $Python)) {
   --collect-data yfinance `
   --collect-submodules curl_cffi `
   --collect-data curl_cffi `
-  trading_agents_app.py
+  raven_watch_agents_app.py
 
 Write-Host ""
-Write-Host "Built: $ProjectRoot\dist\TradingAgentsCN\TradingAgentsCN.exe"
+Write-Host "Built: $ProjectRoot\dist\RavenWatchAgentsCN\RavenWatchAgentsCN.exe"

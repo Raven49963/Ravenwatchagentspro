@@ -133,8 +133,8 @@ class WorkflowCancelled(RuntimeError):
     pass
 
 
-class TradingAgentsWorkflow:
-    """Auditable TradingAgents-style orchestration for the desktop application."""
+class RavenWatchAgentsWorkflow:
+    """Auditable multi-agent orchestration for the desktop application."""
 
     def __init__(
         self,
@@ -236,7 +236,7 @@ class TradingAgentsWorkflow:
                 self.runtime_warnings.append(
                     f"{AGENT_TITLES[agent_id]}在线调用失败，已使用离线规则：{detail}"
                 )
-                offline_workflow = TradingAgentsWorkflow(
+                offline_workflow = RavenWatchAgentsWorkflow(
                     WorkflowConfig(
                         mode="offline",
                         selected_analysts=self.config.selected_analysts,

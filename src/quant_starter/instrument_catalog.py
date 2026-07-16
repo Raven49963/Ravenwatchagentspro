@@ -31,7 +31,7 @@ CATALOG_STALE_SECONDS = 14 * 24 * 60 * 60
 CATALOG_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36 "
-    "TradingAgentsPro/1.6"
+    "RavenWatchAgentsPro/1.6"
 )
 CATALOG_RESOURCE = Path(__file__).with_name("resources") / "instrument_catalog.json.gz"
 
@@ -95,14 +95,14 @@ def _read_bytes_with_windows_http(
 ) -> bytes:
     script = (
         "$ProgressPreference='SilentlyContinue';"
-        "$response=Invoke-WebRequest -UseBasicParsing -Uri $env:TRADINGAGENTSPRO_CATALOG_URL "
+        "$response=Invoke-WebRequest -UseBasicParsing -Uri $env:RAVENWATCHAGENTSPRO_CATALOG_URL "
         "-Headers @{'User-Agent'='Mozilla/5.0';'Referer'='https://quote.eastmoney.com/'} "
         f"-TimeoutSec {max(5, int(timeout))};"
         "$bytes=[Text.Encoding]::UTF8.GetBytes([string]$response.Content);"
         "[Console]::Out.Write([Convert]::ToBase64String($bytes))"
     )
     environment = os.environ.copy()
-    environment["TRADINGAGENTSPRO_CATALOG_URL"] = url
+    environment["RAVENWATCHAGENTSPRO_CATALOG_URL"] = url
     completed = subprocess.run(
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
         check=True,
@@ -612,7 +612,7 @@ def _preset_catalog(market: str) -> MarketCatalog:
         market=market,
         items=items,
         provider="built-in-presets",
-        provider_label="TradingAgents Pro 精选目录",
+        provider_label="Raven Watch Agents Pro 精选目录",
         provider_url="",
         updated_at=_utc_now(),
         source_mode="built-in",
@@ -702,13 +702,13 @@ def _read_snapshot(path: Path) -> dict[str, Any]:
 
 
 def _default_cache_dir() -> Path:
-    configured = os.getenv("TRADINGAGENTSPRO_CATALOG_CACHE", "").strip()
+    configured = os.getenv("RAVENWATCHAGENTSPRO_CATALOG_CACHE", "").strip()
     if configured:
         return Path(configured).expanduser()
     local_app_data = os.getenv("LOCALAPPDATA", "").strip()
     if local_app_data:
-        return Path(local_app_data) / "TradingAgentsPro" / "catalog"
-    return Path.home() / ".tradingagentspro" / "catalog"
+        return Path(local_app_data) / "RavenWatchAgentsPro" / "catalog"
+    return Path.home() / ".ravenwatchagentspro" / "catalog"
 
 
 class InstrumentCatalogService:
@@ -944,7 +944,7 @@ catalog_service = InstrumentCatalogService()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build TradingAgents Pro instrument catalog")
+    parser = argparse.ArgumentParser(description="Build Raven Watch Agents Pro instrument catalog")
     parser.add_argument("--output", type=Path, default=CATALOG_RESOURCE)
     args = parser.parse_args()
     payload = build_catalog_snapshot()

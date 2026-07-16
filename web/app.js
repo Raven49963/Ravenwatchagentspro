@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const terminal = document.getElementById("trading-terminal");
+  const terminal = document.getElementById("raven-terminal");
   const workspace = document.querySelector(".workspace");
   const symbolInput = document.getElementById("symbol-input");
   const symbolOptions = document.getElementById("symbol-options");

@@ -33,7 +33,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from quant_starter.agent_workflow import (
     ProgressEvent,
-    TradingAgentsWorkflow,
+    RavenWatchAgentsWorkflow,
     WorkflowCancelled,
     WorkflowConfig,
 )
@@ -123,9 +123,9 @@ class AgentResearchOptions:
 
 
 def _provider_environment_value(provider: str, suffix: str) -> str:
-    specific = os.getenv(f"TRADINGAGENTS_{provider.upper()}_{suffix}", "").strip()
-    configured_provider = os.getenv("TRADINGAGENTS_LLM_PROVIDER", "").strip().lower()
-    generic = os.getenv(f"TRADINGAGENTS_LLM_{suffix}", "").strip()
+    specific = os.getenv(f"RAVENWATCHAGENTS_{provider.upper()}_{suffix}", "").strip()
+    configured_provider = os.getenv("RAVENWATCHAGENTS_LLM_PROVIDER", "").strip().lower()
+    generic = os.getenv(f"RAVENWATCHAGENTS_LLM_{suffix}", "").strip()
     return specific or (generic if configured_provider == provider else "")
 
 
@@ -884,7 +884,7 @@ class MarketService:
             news=news,
             warnings=warnings,
         )
-        workflow = TradingAgentsWorkflow(workflow_config, llm_client)
+        workflow = RavenWatchAgentsWorkflow(workflow_config, llm_client)
         result = workflow.run(
             context,
             progress=progress,
@@ -1005,7 +1005,7 @@ class EvidenceRequest(QuantValidationRequest):
 
 
 app = FastAPI(
-    title="TradingAgents Pro API",
+    title="Raven Watch Agents Pro API",
     version="1.6.0",
     description="四市场实时行情、参数化样本外验证、本地证据评分、新闻基本面与多智能体研判服务。",
 )
@@ -1013,7 +1013,7 @@ app = FastAPI(
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
-    desktop_token = os.getenv("TRADINGAGENTS_DESKTOP_TOKEN", "")
+    desktop_token = os.getenv("RAVENWATCHAGENTS_DESKTOP_TOKEN", "")
     if desktop_token and request.url.path.startswith("/api/"):
         supplied_token = (
             request.headers.get("X-Desktop-Token")
@@ -1044,7 +1044,7 @@ async def value_error_handler(_request: Request, exc: ValueError) -> JSONRespons
 def health() -> dict[str, Any]:
     return {
         "status": "ok",
-        "service": "TradingAgents Pro",
+        "service": "Raven Watch Agents Pro",
         "version": app.version,
         "markets": ["a-share", "nasdaq", "hk", "global"],
         "realtime": True,
@@ -1526,7 +1526,7 @@ def index() -> FileResponse:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="TradingAgents Pro Web Server")
+    parser = argparse.ArgumentParser(description="Raven Watch Agents Pro Web Server")
     parser.add_argument("--host", default=os.getenv("HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.getenv("PORT", "8765")))
     parser.add_argument("--reload", action="store_true")

@@ -1,38 +1,27 @@
 # -*- mode: python ; coding: utf-8 -*-
-from pathlib import Path
-
 from PyInstaller.utils.hooks import collect_data_files
 from PyInstaller.utils.hooks import collect_submodules
-from PyInstaller.utils.hooks import copy_metadata
 
-
-project_root = Path(SPECPATH)
-datas = [
-    (str(project_root / "web"), "web"),
-    (
-        str(project_root / "src" / "quant_starter" / "resources"),
-        "quant_starter/resources",
-    ),
-]
+datas = []
 hiddenimports = []
-
-for package in ("akshare", "yfinance", "curl_cffi", "fastapi", "uvicorn", "webview"):
-    datas += collect_data_files(package)
-    hiddenimports += collect_submodules(package)
-
-datas += copy_metadata("pywebview")
+datas += collect_data_files('akshare')
+datas += collect_data_files('yfinance')
+datas += collect_data_files('curl_cffi')
+hiddenimports += collect_submodules('akshare')
+hiddenimports += collect_submodules('yfinance')
+hiddenimports += collect_submodules('curl_cffi')
 
 
 a = Analysis(
-    ["web_desktop_app.py"],
-    pathex=[str(project_root), str(project_root / "src")],
+    ['raven_watch_agents_app.py'],
+    pathex=['src'],
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["PyQt5", "PyQt6", "PySide2", "PySide6", "gi"],
+    excludes=[],
     noarchive=False,
     optimize=0,
 )
@@ -43,7 +32,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="TradingAgentsPro",
+    name='RavenWatchAgentsCN',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -54,7 +43,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=[str(project_root / "web" / "tradingagentspro.ico")],
 )
 coll = COLLECT(
     exe,
@@ -63,5 +51,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name="TradingAgentsPro",
+    name='RavenWatchAgentsCN',
 )

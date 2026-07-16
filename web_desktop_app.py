@@ -18,7 +18,7 @@ import uvicorn
 from web_app import app
 
 
-APP_NAME = "TradingAgentsPro"
+APP_NAME = "RavenWatchAgentsPro"
 
 
 def _resource_path(relative_path: str) -> Path:
@@ -65,7 +65,7 @@ class DesktopServer:
         self.server = uvicorn.Server(config)
         self.thread = threading.Thread(
             target=self.server.run,
-            name="tradingagents-api",
+            name="ravenwatchagents-api",
             daemon=True,
         )
 
@@ -101,7 +101,7 @@ class DesktopServer:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="TradingAgents Pro Desktop")
+    parser = argparse.ArgumentParser(description="Raven Watch Agents Pro Desktop")
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--smoke-test", action="store_true")
     parser.add_argument("--window-smoke-test", action="store_true")
@@ -137,7 +137,7 @@ def main() -> None:
     _configure_logging()
     args = parse_args()
     token = secrets.token_urlsafe(32)
-    os.environ["TRADINGAGENTS_DESKTOP_TOKEN"] = token
+    os.environ["RAVENWATCHAGENTS_DESKTOP_TOKEN"] = token
     server = DesktopServer(args.port or _find_free_port(), token)
     try:
         health = server.start()
@@ -151,7 +151,7 @@ def main() -> None:
         storage_path.mkdir(parents=True, exist_ok=True)
         url = f"{server.base_url}/?desktop_token={quote(token)}"
         window = webview.create_window(
-            "TradingAgents Pro 研投终端",
+            "Raven Watch Agents Pro 研投终端",
             url=url,
             width=1440,
             height=940,
@@ -167,7 +167,7 @@ def main() -> None:
             debug=False,
             private_mode=False,
             storage_path=str(storage_path),
-            icon=str(_resource_path("web/tradingagentspro.ico")),
+            icon=str(_resource_path("web/ravenwatchagentspro.ico")),
         )
         if args.window_smoke_test and not smoke_result["ready"]:
             raise RuntimeError(f"桌面窗口验收失败：{smoke_result.get('error', '未知错误')}")

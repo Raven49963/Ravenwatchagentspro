@@ -154,7 +154,7 @@ def _tencent_quote(symbol: str, market: str = "a-share") -> MarketSnapshot:
     request = urlrequest.Request(
         TENCENT_QUOTE_URL.format(symbol=market_symbol),
         headers={
-            "User-Agent": "Mozilla/5.0 TradingAgentsCN/1.0",
+            "User-Agent": "Mozilla/5.0 RavenWatchAgentsCN/1.6",
             "Accept": "text/plain,*/*",
             "Referer": f"https://gu.qq.com/{market_symbol}/gp",
         },
@@ -250,7 +250,7 @@ def _tencent_intraday(symbol: str, market: str = "a-share") -> pd.DataFrame:
     request = urlrequest.Request(
         f"{TENCENT_MINUTE_URL}?{query}",
         headers={
-            "User-Agent": "Mozilla/5.0 TradingAgentsCN/1.0",
+            "User-Agent": "Mozilla/5.0 RavenWatchAgentsCN/1.6",
             "Accept": "application/json,text/plain,*/*",
             "Referer": f"https://gu.qq.com/{market_symbol}/gp",
         },
@@ -332,7 +332,7 @@ def _yahoo_intraday_result(symbol: str) -> dict[str, Any]:
     request = urlrequest.Request(
         f"{YAHOO_INTRADAY_URL.format(symbol=normalized)}?{query}",
         headers={
-            "User-Agent": "Mozilla/5.0 TradingAgentsCN/1.0",
+            "User-Agent": "Mozilla/5.0 RavenWatchAgentsCN/1.6",
             "Accept": "application/json",
         },
     )

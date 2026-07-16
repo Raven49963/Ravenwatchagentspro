@@ -100,7 +100,7 @@ class OpenAICompatibleClient:
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "TradingAgentsPro/1.6",
+            "User-Agent": "RavenWatchAgentsPro/1.6",
             "X-Client-Request-Id": str(uuid.uuid4()),
         }
         if self.settings.api_key.strip():

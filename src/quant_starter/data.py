@@ -445,7 +445,7 @@ def _fetch_tencent_ohlcv_direct(
             request = urlrequest.Request(
                 f"{endpoint}?{urlparse.urlencode(params)}",
                 headers={
-                    "User-Agent": "Mozilla/5.0 TradingAgentsCN/1.0",
+                    "User-Agent": "Mozilla/5.0 RavenWatchAgentsCN/1.6",
                     "Accept": "application/json,text/plain,*/*",
                     "Referer": f"https://gu.qq.com/{market_symbol}/zs",
                 },
@@ -710,7 +710,7 @@ def _fetch_stooq_ohlcv(symbol: str, start: str, end: str) -> pd.DataFrame:
     )
     http_request = urlrequest.Request(
         f"https://stooq.com/q/d/l/?{query}",
-        headers={"User-Agent": "Mozilla/5.0 TradingAgentsCN/1.0"},
+        headers={"User-Agent": "Mozilla/5.0 RavenWatchAgentsCN/1.6"},
     )
     body = _read_http_text(http_request, timeout=20, attempts=2)
     if "<html" in body[:200].lower():
@@ -859,7 +859,7 @@ def _fetch_yahoo_chart_ohlcv(
     http_request = urlrequest.Request(
         f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?{query}",
         headers={
-            "User-Agent": "Mozilla/5.0 TradingAgentsCN/1.0",
+            "User-Agent": "Mozilla/5.0 RavenWatchAgentsCN/1.6",
             "Accept": "application/json",
         },
     )

@@ -26,12 +26,12 @@ MSN_FINANCE_URL = "https://assets.msn.com/service/Finance"
 # Public browser key embedded by Microsoft on MSN Money pages. It can be
 # overridden without rebuilding if Microsoft rotates it.
 MSN_PUBLIC_API_KEY = os.getenv(
-    "TRADINGAGENTS_MSN_API_KEY",
+    "RAVENWATCHAGENTS_MSN_API_KEY",
     "0QfOX3Vn51YCzitbLaRkTTBadtWpgTN8NZLW0C1SEM",
 )
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 Chrome/126.0 Safari/537.36 TradingAgentsPro/1.6"
+    "AppleWebKit/537.36 Chrome/126.0 Safari/537.36 RavenWatchAgentsPro/1.6"
 )
 
 SECURITY_TYPES = {

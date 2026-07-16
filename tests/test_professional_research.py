@@ -543,7 +543,7 @@ class WebServiceTests(unittest.TestCase):
             with mock.patch.dict(
                 os.environ,
                 {
-                    "TRADINGAGENTS_OPENAI_BASE_URL": (
+                    "RAVENWATCHAGENTS_OPENAI_BASE_URL": (
                         f"http://127.0.0.1:{server.server_address[1]}/v1"
                     )
                 },
@@ -611,7 +611,7 @@ class WebServiceTests(unittest.TestCase):
                 }
             )
 
-        with mock.patch.dict(os.environ, {"TRADINGAGENTS_DESKTOP_TOKEN": "secret"}):
+        with mock.patch.dict(os.environ, {"RAVENWATCHAGENTS_DESKTOP_TOKEN": "secret"}):
             denied = asyncio.run(security_headers(request(), call_next))
             accepted = asyncio.run(
                 security_headers(request(b"desktop_token=secret"), call_next)

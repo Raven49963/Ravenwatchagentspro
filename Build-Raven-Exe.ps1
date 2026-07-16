@@ -9,7 +9,7 @@ if (-not (Test-Path $Python)) {
 }
 
 & $Python -m pip install -r requirements-desktop.txt
-& $Python -m PyInstaller --noconfirm --clean TradingAgentsPro.spec
+& $Python -m PyInstaller --noconfirm --clean RavenWatchAgentsPro.spec
 
 Write-Host ""
-Write-Host "Built: $ProjectRoot\dist\TradingAgentsPro\TradingAgentsPro.exe"
+Write-Host "Built: $ProjectRoot\dist\RavenWatchAgentsPro\RavenWatchAgentsPro.exe"

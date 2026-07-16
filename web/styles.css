@@ -63,7 +63,7 @@ button {
   display: none !important;
 }
 
-#trading-terminal {
+#raven-terminal {
   display: grid;
   grid-template-columns: 208px minmax(0, 1fr);
   height: 100vh;
@@ -1767,29 +1767,29 @@ tr:last-child td {
   color: var(--negative) !important;
 }
 
-#trading-terminal[data-market="a-share"] .is-up {
+#raven-terminal[data-market="a-share"] .is-up {
   color: var(--negative);
 }
 
-#trading-terminal[data-market="a-share"] .is-down {
+#raven-terminal[data-market="a-share"] .is-down {
   color: var(--positive);
 }
 
-#trading-terminal[data-market="nasdaq"] .is-up {
+#raven-terminal[data-market="nasdaq"] .is-up {
   color: var(--positive);
 }
 
-#trading-terminal[data-market="nasdaq"] .is-down {
+#raven-terminal[data-market="nasdaq"] .is-down {
   color: var(--negative);
 }
 
-#trading-terminal[data-market="hk"] .is-up,
-#trading-terminal[data-market="global"] .is-up {
+#raven-terminal[data-market="hk"] .is-up,
+#raven-terminal[data-market="global"] .is-up {
   color: var(--positive);
 }
 
-#trading-terminal[data-market="hk"] .is-down,
-#trading-terminal[data-market="global"] .is-down {
+#raven-terminal[data-market="hk"] .is-down,
+#raven-terminal[data-market="global"] .is-down {
   color: var(--negative);
 }
 
@@ -2807,7 +2807,7 @@ tr:last-child td {
 }
 
 @media (max-width: 1180px) {
-  #trading-terminal {
+  #raven-terminal {
     grid-template-columns: 64px minmax(0, 1fr);
   }
 
@@ -2864,7 +2864,7 @@ tr:last-child td {
 }
 
 @media (max-width: 860px) {
-  #trading-terminal {
+  #raven-terminal {
     height: auto;
     min-height: 100vh;
     overflow: visible;
@@ -2963,7 +2963,7 @@ tr:last-child td {
 }
 
 @media (max-width: 620px) {
-  #trading-terminal {
+  #raven-terminal {
     grid-template-columns: 52px minmax(0, 1fr);
   }
 

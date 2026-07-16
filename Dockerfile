@@ -9,13 +9,13 @@ WORKDIR /app
 
 COPY requirements-web.txt ./
 RUN pip install --no-cache-dir -r requirements-web.txt \
-    && useradd --create-home --uid 10001 tradingagents
+    && useradd --create-home --uid 10001 ravenwatch
 
 COPY src ./src
 COPY web ./web
 COPY web_app.py ./
 
-USER tradingagents
+USER ravenwatch
 EXPOSE 8765
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

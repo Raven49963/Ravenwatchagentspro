@@ -15,7 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from quant_starter.agent_workflow import (
-    TradingAgentsWorkflow,
+    RavenWatchAgentsWorkflow,
     WorkflowCancelled,
     WorkflowConfig,
 )
@@ -509,7 +509,7 @@ class ResearchTests(unittest.TestCase):
 
     def test_offline_workflow_runs_full_team(self) -> None:
         events = []
-        workflow = TradingAgentsWorkflow(
+        workflow = RavenWatchAgentsWorkflow(
             WorkflowConfig(mode="offline", debate_rounds=2, risk_rounds=2)
         )
         result = workflow.run(self.context, progress=events.append)
@@ -524,7 +524,7 @@ class ResearchTests(unittest.TestCase):
     def test_workflow_can_be_cancelled_before_first_agent(self) -> None:
         cancel = threading.Event()
         cancel.set()
-        workflow = TradingAgentsWorkflow(WorkflowConfig(mode="offline"))
+        workflow = RavenWatchAgentsWorkflow(WorkflowConfig(mode="offline"))
         with self.assertRaises(WorkflowCancelled):
             workflow.run(self.context, cancel_event=cancel)
 
@@ -534,7 +534,7 @@ class ResearchTests(unittest.TestCase):
             def complete(_system: str, _user: str) -> str:
                 raise LLMRequestError("test endpoint unavailable")
 
-        workflow = TradingAgentsWorkflow(
+        workflow = RavenWatchAgentsWorkflow(
             WorkflowConfig(
                 mode="online",
                 selected_analysts=("market",),
@@ -570,7 +570,7 @@ class ResearchTests(unittest.TestCase):
                 return "# 在线报告\n\n测试角色已完成。"
 
         events = []
-        workflow = TradingAgentsWorkflow(
+        workflow = RavenWatchAgentsWorkflow(
             WorkflowConfig(mode="online", fallback_to_offline=True),
             PartiallyFailingClient(),  # type: ignore[arg-type]
         )
@@ -620,7 +620,7 @@ class ResearchTests(unittest.TestCase):
         )
 
     def test_report_bundle_and_decision_memory(self) -> None:
-        workflow = TradingAgentsWorkflow(WorkflowConfig(mode="offline"))
+        workflow = RavenWatchAgentsWorkflow(WorkflowConfig(mode="offline"))
         result = workflow.run(self.context)
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 
 os.environ.setdefault(
-    "MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / "TradingAgentsCN-matplotlib")
+    "MPLCONFIGDIR", str(Path(tempfile.gettempdir()) / "RavenWatchAgentsCN-matplotlib")
 )
 
 import matplotlib

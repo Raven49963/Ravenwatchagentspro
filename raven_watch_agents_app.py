@@ -45,7 +45,7 @@ from quant_app import QuantStarterApp
 from quant_starter.agent_workflow import (
     ProgressEvent,
     ResearchResult,
-    TradingAgentsWorkflow,
+    RavenWatchAgentsWorkflow,
     WorkflowCancelled,
     WorkflowConfig,
 )
@@ -65,7 +65,7 @@ from quant_starter.symbols import (
 )
 
 
-APP_HOME = Path.home() / "Documents" / "TradingAgentsCN"
+APP_HOME = Path.home() / "Documents" / "RavenWatchAgentsCN"
 DEFAULT_OUTPUT = APP_HOME / "research"
 DEFAULT_MEMORY = APP_HOME / "memory" / "decision_log.jsonl"
 
@@ -126,7 +126,7 @@ PIPELINE_GROUPS = (
 
 
 class AgentPipelineView(tk.Frame):
-    """Compact, stateful view of the TradingAgents collaboration graph."""
+    """Compact, stateful view of the Raven Watch Agents collaboration graph."""
 
     def __init__(self, parent: tk.Misc) -> None:
         super().__init__(parent, bg=COLORS["surface"])
@@ -242,10 +242,10 @@ class ResearchRequest:
     llm_timeout: int
 
 
-class TradingAgentsDesktopApp:
+class RavenWatchAgentsDesktopApp:
     def __init__(self, root: Tk) -> None:
         self.root = root
-        self.root.title("TradingAgents 中文投研工作台")
+        self.root.title("Raven Watch Agents 中文投研工作台")
         self.root.geometry("1440x900")
         self.root.minsize(1180, 760)
         self.root.configure(bg=COLORS["bg"])
@@ -474,7 +474,7 @@ class TradingAgentsDesktopApp:
         brand_text.pack(side="left", padx=(10, 0))
         tk.Label(
             brand_text,
-            text="TradingAgents",
+            text="Raven Watch Agents",
             bg=COLORS["sidebar"],
             fg="#FFFFFF",
             font=("Microsoft YaHei UI", 11, "bold"),
@@ -1510,7 +1510,7 @@ class TradingAgentsDesktopApp:
                         timeout_seconds=request_data.llm_timeout,
                     )
                 )
-            workflow = TradingAgentsWorkflow(
+            workflow = RavenWatchAgentsWorkflow(
                 WorkflowConfig(
                     mode=request_data.mode,
                     selected_analysts=request_data.selected_analysts,
@@ -1882,7 +1882,7 @@ def run_smoke_test() -> None:
         end="2025-12-31",
         fetch_details=True,
     )
-    workflow = TradingAgentsWorkflow(
+    workflow = RavenWatchAgentsWorkflow(
         WorkflowConfig(mode="offline", debate_rounds=1, risk_rounds=1)
     )
     result = workflow.run(context)
@@ -1915,7 +1915,7 @@ def run_market_data_smoke_test() -> None:
         )
         if len(context.bars) < 60:
             raise RuntimeError(f"{source} {symbol} returned too few market rows")
-        result = TradingAgentsWorkflow(
+        result = RavenWatchAgentsWorkflow(
             WorkflowConfig(mode="offline", debate_rounds=1, risk_rounds=1)
         ).run(context)
         if len(result.reports) < 10:
@@ -1931,7 +1931,7 @@ def main() -> None:
         return
 
     root = Tk()
-    TradingAgentsDesktopApp(root)
+    RavenWatchAgentsDesktopApp(root)
     root.mainloop()
 
 
