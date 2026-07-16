@@ -23,7 +23,7 @@
 - 综合风控：市场状态、策略共识、目标仓位、置信度、ATR 止损止盈与风险等级。
 - 12 个投研角色：技术、情绪、新闻、基本面、多空研究、研究经理、交易员、三类风险分析师和组合经理。
 - 离线规则模式：无需 API Key，可完整跑通研究流程。
-- 在线 LLM 模式：Web 端支持 OpenAI、DeepSeek、Qwen、Ollama；服务端可覆盖兼容接口地址。
+- 在线 LLM 模式：DeepSeek V4 为默认在线服务，支持 `deepseek-v4-flash`、`deepseek-v4-pro`、思考模式、推理强度、连接诊断、限流重试和 Token 用量汇总；同时兼容 OpenAI、Qwen 与 Ollama。
 - 智能体运行监控：异步任务、SSE 实时进度、逐角色耗时、取消、失败隔离和离线回退。
 - 五类策略：杠杆战术增长、自适应验证、风险调整动量、经典动量轮动、双均线。
 - 真实成本：手续费、滑点、下一交易日执行、仓位与风险预算。
@@ -59,6 +59,7 @@ cd D:\codex\quant-starter
 - `GET /api/news`：当前标的的多源在线新闻/公告、原文链接与逐来源状态。
 - `GET /api/research/factors`：新增因子的公式、历史要求和研究来源目录。
 - `GET /api/research/providers`：在线模型服务和服务端配置状态。
+- `POST /api/research/providers/test`：使用当前模型、密钥和推理参数执行短连接诊断。
 - `POST /api/research/jobs`：创建异步智能体研判任务。
 - `GET /api/research/jobs/{job_id}/stream`：12 角色 SSE 运行进度。
 - `GET /api/research/jobs/{job_id}`：查询状态和最终报告。
@@ -97,16 +98,26 @@ $env:RAVENWATCHAGENTSPRO_SEC_USER_AGENT = "YourApp/1.0 your-email@example.com"
 
 ## 在线智能体
 
-点击终端右上角“开始研判”，选择“在线模型”，再选择模型服务并填写模型 ID。默认编排包含 12 个角色步骤；可调整四类分析师、多空辩论轮数、风险合议轮数，以及是否补充新闻和基本面数据。
+点击终端右上角“开始研判”，选择“在线模型”。DeepSeek V4 已作为默认服务，默认模型为速度优先的 `deepseek-v4-flash`，也可切换为 `deepseek-v4-pro`；填写 API Key 后可先点击“测试连接”。默认编排包含 12 个角色步骤，可调整思考模式、推理强度、四类分析师、多空辩论轮数、风险合议轮数，以及是否补充新闻和基本面数据。
 
 支持的默认兼容地址：
 
 - OpenAI：`https://api.openai.com/v1`
-- DeepSeek：`https://api.deepseek.com/v1`
+- DeepSeek V4：`https://api.deepseek.com`
 - Qwen：`https://dashscope.aliyuncs.com/compatible-mode/v1`
 - Ollama：`http://127.0.0.1:11434/v1`
 
-也可以只在服务端配置模型，不在每次研判时输入密钥。通用环境变量如下：
+DeepSeek 当前推荐模型 ID 为 `deepseek-v4-flash` 与 `deepseek-v4-pro`，接口与参数以 [DeepSeek API 文档](https://api-docs.deepseek.com/api/create-chat-completion)为准。程序只使用响应中的最终 `content` 生成报告，不展示或保存模型的内部推理内容；遇到限流或临时服务错误会进行有上限的短暂重试。
+
+也可以只在服务端配置模型，不在每次研判时输入密钥。DeepSeek 专用配置示例：
+
+```powershell
+$env:RAVENWATCHAGENTS_DEEPSEEK_MODEL = "deepseek-v4-flash"
+$env:RAVENWATCHAGENTS_DEEPSEEK_API_KEY = "填写DeepSeekAPIKey"
+$env:RAVENWATCHAGENTS_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+```
+
+通用环境变量如下：
 
 ```powershell
 $env:RAVENWATCHAGENTS_LLM_PROVIDER = "openai"
@@ -325,5 +336,6 @@ src/quant_starter/metrics.py       收益和风险指标
 src/quant_starter/symbols.py       个股预设、显示与代码校验
 src/quant_starter/kline.py         蜡烛图、均线与成交量图
 src/quant_starter/agent_workflow.py 多智能体编排
+src/quant_starter/llm_client.py     DeepSeek V4 与 OpenAI 兼容客户端、重试和用量统计
 src/quant_starter/research_store.py 报告与记忆落盘
 ```

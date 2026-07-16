@@ -1818,7 +1818,23 @@
       select.append(option);
     });
     if (!state.providers.length) throw new Error("没有可用的在线模型服务。");
+    const preferred = state.providers.find((provider) => provider.id === "deepseek");
+    select.value = preferred ? preferred.id : state.providers[0].id;
     syncProviderSettings();
+  }
+
+  function setProviderStatus(message, tone = "neutral", iconName = "shield-check") {
+    const status = byId("provider-key-status");
+    status.replaceChildren(createIcon(iconName), document.createTextNode(message));
+    status.classList.toggle("is-success", tone === "success");
+    status.classList.toggle("is-error", tone === "error");
+    status.classList.toggle("is-busy", tone === "busy");
+    refreshIcons();
+  }
+
+  function syncReasoningSettings() {
+    const thinkingMode = byId("thinking-mode-select").value;
+    byId("reasoning-effort-select").disabled = thinkingMode !== "enabled";
   }
 
   function selectedAnalysts() {
@@ -1845,6 +1861,7 @@
       button.classList.toggle("is-selected", button.dataset.agentMode === state.agentMode);
     });
     byId("online-model-settings").classList.toggle("is-hidden", state.agentMode !== "online");
+    byId("test-provider-button").classList.toggle("is-hidden", state.agentMode !== "online");
     const fallback = byId("fallback-input");
     const fallbackSetting = byId("fallback-setting");
     fallback.disabled = state.agentMode !== "online";
@@ -1859,31 +1876,99 @@
     const modelInput = byId("model-input");
     const keyInput = byId("api-key-input");
     const keyLabel = byId("api-key-label");
-    const keyStatus = byId("provider-key-status");
+    const suggestions = byId("model-suggestions");
+    const deepseekSettings = byId("deepseek-settings");
+    const testButton = byId("test-provider-button");
     if (state.agentMode !== "online") {
-      keyStatus.textContent = "离线规则无需密钥";
+      deepseekSettings.classList.add("is-hidden");
+      testButton.classList.add("is-hidden");
+      setProviderStatus("离线规则无需密钥");
       return;
     }
+    testButton.classList.remove("is-hidden");
     if (!provider) {
       endpoint.value = "";
-      keyStatus.textContent = "模型服务配置不可用";
+      deepseekSettings.classList.add("is-hidden");
+      testButton.disabled = true;
+      setProviderStatus("模型服务配置不可用", "error", "circle-alert");
       return;
     }
+    testButton.disabled = false;
     endpoint.value = provider.base_url || "";
     const previousAutoModel = modelInput.dataset.autoModel || "";
+    const autoModel = provider.server_model || provider.default_model || "";
     if (!modelInput.value.trim() || modelInput.value === previousAutoModel) {
-      modelInput.value = provider.server_model || "";
-      modelInput.dataset.autoModel = provider.server_model || "";
+      modelInput.value = autoModel;
+      modelInput.dataset.autoModel = autoModel;
     }
+    suggestions.replaceChildren();
+    (provider.recommended_models || []).forEach((model) => {
+      const option = document.createElement("option");
+      option.value = model;
+      suggestions.append(option);
+    });
     modelInput.placeholder = provider.id === "ollama" ? "例如 qwen3:8b" : "填写模型 ID";
     keyLabel.textContent = `${provider.label} API Key`;
     keyInput.placeholder = provider.requires_api_key ? "仅用于本次任务" : "可选";
+    deepseekSettings.classList.toggle("is-hidden", !provider.supports_thinking);
+    syncReasoningSettings();
     if (provider.server_key_configured) {
-      keyStatus.textContent = `服务端已配置 ${provider.label} 密钥`;
+      setProviderStatus(`服务端已配置 ${provider.label} 密钥`, "success");
     } else if (provider.requires_api_key) {
-      keyStatus.textContent = `需要填写 ${provider.label} API Key`;
+      setProviderStatus(`需要填写 ${provider.label} API Key`);
     } else {
-      keyStatus.textContent = `${provider.label} 本地服务无需密钥`;
+      setProviderStatus(`${provider.label} 本地服务无需密钥`, "success");
+    }
+  }
+
+  function collectProviderConnectionOptions() {
+    const provider = providerFor(byId("provider-select").value);
+    if (!provider) throw new Error("请选择在线模型服务。");
+    const model = byId("model-input").value.trim()
+      || provider.server_model
+      || provider.default_model
+      || "";
+    const apiKey = byId("api-key-input").value.trim();
+    if (!model) throw new Error("请填写模型 ID。");
+    if (provider.requires_api_key && !provider.server_key_configured && !apiKey) {
+      throw new Error(`请填写 ${provider.label} API Key。`);
+    }
+    return {
+      provider: provider.id,
+      model,
+      api_key: apiKey || undefined,
+      timeout_seconds: Math.min(60, Number(byId("timeout-select").value)),
+      thinking_mode: byId("thinking-mode-select").value,
+      reasoning_effort: byId("reasoning-effort-select").value,
+    };
+  }
+
+  async function testProviderConnection() {
+    const button = byId("test-provider-button");
+    let options;
+    try {
+      options = collectProviderConnectionOptions();
+    } catch (error) {
+      setProviderStatus(error.message, "error", "circle-alert");
+      showToast(error.message);
+      return;
+    }
+    const provider = providerFor(options.provider);
+    button.disabled = true;
+    setProviderStatus(`正在连接 ${provider.label}`, "busy", "loader-circle");
+    try {
+      const payload = await requestJson("/api/research/providers/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(options),
+      });
+      setProviderStatus(`${provider.label} 已连接 · ${payload.latency_ms} ms`, "success", "circle-check");
+      showToast(`${provider.label} 连接成功。`);
+    } catch (error) {
+      setProviderStatus(error.message, "error", "circle-alert");
+      showToast(error.message);
+    } finally {
+      button.disabled = false;
     }
   }
 
@@ -1906,7 +1991,7 @@
     const apiKey = byId("api-key-input").value.trim();
     if (state.agentMode === "online") {
       if (!provider) throw new Error("请选择在线模型服务。");
-      if (!model && !provider.server_model) throw new Error("请填写模型 ID。");
+      if (!model && !provider.server_model && !provider.default_model) throw new Error("请填写模型 ID。");
       if (provider.requires_api_key && !provider.server_key_configured && !apiKey) {
         throw new Error(`请填写 ${provider.label} API Key。`);
       }
@@ -1915,11 +2000,13 @@
       market: state.market,
       symbol: state.symbol,
       mode: state.agentMode,
-      provider: provider ? provider.id : "openai",
+      provider: provider ? provider.id : "deepseek",
       model,
       api_key: state.agentMode === "online" && apiKey ? apiKey : undefined,
       temperature: Number(byId("temperature-input").value),
       timeout_seconds: Number(byId("timeout-select").value),
+      thinking_mode: byId("thinking-mode-select").value,
+      reasoning_effort: byId("reasoning-effort-select").value,
       fallback_to_offline: byId("fallback-input").checked,
       fetch_details: byId("fetch-details-input").checked,
       selected_analysts: analysts,
@@ -2096,6 +2183,7 @@
     const decision = payload.decision || {};
     const llm = payload.llm || {};
     const evidence = payload.evidence || {};
+    const usage = llm.usage || {};
     const modelLabel = payload.mode === "online"
       ? `${llm.provider_label || llm.provider || "在线模型"} · ${llm.model || "--"}`
       : "离线可审计规则";
@@ -2105,6 +2193,7 @@
       ["目标仓位", formatPercent(decision.target_allocation, 0)],
       ["模型", modelLabel],
       ["证据", `${safeNumber(evidence.news_items)} 条新闻 / ${safeNumber(evidence.fundamental_fields)} 项基本面`],
+      ["调用", payload.mode === "online" ? `${safeNumber(usage.requests)} 次 / ${safeNumber(usage.total_tokens)} Token` : "本地"],
       ["提示", `${(payload.warnings || []).length} 条`],
     ]);
     const preferred = state.agentPlan.find((item) => item.agentId === "portfolio_manager" && item.report)
@@ -2395,6 +2484,8 @@
       byId("api-key-input").value = "";
       syncProviderSettings();
     });
+    byId("thinking-mode-select").addEventListener("change", syncReasoningSettings);
+    byId("test-provider-button").addEventListener("click", testProviderConnection);
     byId("temperature-input").addEventListener("input", (event) => {
       byId("temperature-output").textContent = Number(event.target.value).toFixed(1);
     });

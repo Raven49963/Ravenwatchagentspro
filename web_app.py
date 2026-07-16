@@ -56,6 +56,7 @@ from quant_starter.factors import (
 )
 from quant_starter.llm_client import (
     LLM_PROVIDER_PROFILES,
+    LLMRequestError,
     LLMSettings,
     OpenAICompatibleClient,
     provider_profile,
@@ -105,11 +106,14 @@ ProviderId = Literal["openai", "deepseek", "qwen", "ollama"]
 @dataclass(frozen=True)
 class AgentResearchOptions:
     mode: str = "offline"
-    provider: str = "openai"
+    provider: str = "deepseek"
     model: str = ""
     api_key: str = ""
     temperature: float = 0.2
     timeout_seconds: int = 60
+    thinking_mode: str = "enabled"
+    reasoning_effort: str = "high"
+    max_tokens: int = 2_000
     fallback_to_offline: bool = True
     fetch_details: bool = False
     selected_analysts: tuple[str, ...] = (
@@ -136,8 +140,10 @@ def _resolve_llm_runtime(
         return None, {"mode": "offline", "provider": "rules", "model": "auditable-rules"}
 
     profile = provider_profile(options.provider)
-    model = options.model.strip() or _provider_environment_value(
-        profile.provider_id, "MODEL"
+    model = (
+        options.model.strip()
+        or _provider_environment_value(profile.provider_id, "MODEL")
+        or profile.default_model
     )
     if not model:
         raise ValueError("在线分析必须填写模型 ID，或在服务端配置模型环境变量。")
@@ -156,9 +162,13 @@ def _resolve_llm_runtime(
         api_key=api_key,
         temperature=options.temperature,
         timeout_seconds=options.timeout_seconds,
+        provider_id=profile.provider_id,
+        thinking_mode=options.thinking_mode,
+        reasoning_effort=options.reasoning_effort,
+        max_tokens=options.max_tokens,
     )
     client = OpenAICompatibleClient(settings)
-    return client, {
+    runtime: dict[str, Any] = {
         "mode": "online",
         "provider": profile.provider_id,
         "provider_label": profile.label,
@@ -166,6 +176,16 @@ def _resolve_llm_runtime(
         "base_url": base_url,
         "server_key_used": not bool(options.api_key.strip()) and bool(api_key),
     }
+    if profile.supports_thinking:
+        runtime["thinking"] = {
+            "type": options.thinking_mode,
+            "reasoning_effort": (
+                options.reasoning_effort
+                if options.thinking_mode == "enabled"
+                else None
+            ),
+        }
+    return client, runtime
 
 
 def _workflow_config(options: AgentResearchOptions) -> WorkflowConfig:
@@ -891,6 +911,8 @@ class MarketService:
             cancel_event=cancel_event,
         )
         summary = result.summary_dict()
+        if llm_client is not None:
+            llm_runtime["usage"] = llm_client.usage_summary()
         status_counts: dict[str, int] = {}
         for item in result.agent_runs:
             status_counts[item.status] = status_counts.get(item.status, 0) + 1
@@ -929,11 +951,13 @@ class AgentResearchRequest(BaseModel):
     market: str = Field(pattern=r"^[A-Za-z-]+$")
     symbol: str = Field(min_length=1, max_length=32)
     mode: Literal["offline", "online"] = "offline"
-    provider: ProviderId = "openai"
+    provider: ProviderId = "deepseek"
     model: str = Field(default="", max_length=160)
     api_key: SecretStr | None = None
     temperature: float = Field(default=0.2, ge=0, le=2)
     timeout_seconds: int = Field(default=60, ge=10, le=300)
+    thinking_mode: Literal["enabled", "disabled"] = "enabled"
+    reasoning_effort: Literal["high", "max"] = "high"
     fallback_to_offline: bool = True
     fetch_details: bool = False
     selected_analysts: tuple[AnalystId, ...] = (
@@ -954,11 +978,37 @@ class AgentResearchRequest(BaseModel):
             api_key=self.api_key.get_secret_value() if self.api_key else "",
             temperature=self.temperature,
             timeout_seconds=self.timeout_seconds,
+            thinking_mode=self.thinking_mode,
+            reasoning_effort=self.reasoning_effort,
             fallback_to_offline=self.fallback_to_offline,
             fetch_details=self.fetch_details,
             selected_analysts=selected,
             debate_rounds=self.debate_rounds,
             risk_rounds=self.risk_rounds,
+        )
+
+
+class ProviderConnectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider: ProviderId = "deepseek"
+    model: str = Field(default="", max_length=160)
+    api_key: SecretStr | None = None
+    timeout_seconds: int = Field(default=30, ge=10, le=60)
+    thinking_mode: Literal["enabled", "disabled"] = "enabled"
+    reasoning_effort: Literal["high", "max"] = "high"
+
+    def options(self) -> AgentResearchOptions:
+        return AgentResearchOptions(
+            mode="online",
+            provider=self.provider,
+            model=self.model.strip(),
+            api_key=self.api_key.get_secret_value() if self.api_key else "",
+            temperature=0,
+            timeout_seconds=self.timeout_seconds,
+            thinking_mode=self.thinking_mode,
+            reasoning_effort=self.reasoning_effort,
+            max_tokens=64,
         )
 
 
@@ -1006,8 +1056,8 @@ class EvidenceRequest(QuantValidationRequest):
 
 app = FastAPI(
     title="Raven Watch Agents Pro API",
-    version="1.6.0",
-    description="四市场实时行情、参数化样本外验证、本地证据评分、新闻基本面与多智能体研判服务。",
+    version="1.7.0",
+    description="四市场实时行情、参数化样本外验证、新闻基本面与 DeepSeek V4 多智能体在线研判服务。",
 )
 
 
@@ -1055,6 +1105,7 @@ def health() -> dict[str, Any]:
         "configurable_quant": True,
         "local_evidence_scoring": True,
         "online_fundamentals": True,
+        "deepseek_v4_online": True,
         "factor_count": len(FACTOR_WEIGHTS),
     }
 
@@ -1205,6 +1256,33 @@ def research_providers() -> dict[str, Any]:
         )
         providers.append(payload)
     return {"providers": providers, "max_concurrent_jobs": research_jobs.max_active}
+
+
+@app.post("/api/research/providers/test")
+async def test_research_provider(
+    config: ProviderConnectionRequest,
+) -> dict[str, Any]:
+    client, runtime = _resolve_llm_runtime(config.options())
+    if client is None:  # pragma: no cover - request always resolves online mode
+        raise HTTPException(status_code=400, detail="连接测试需要在线模型。")
+    started_at = time.perf_counter()
+    try:
+        response = await asyncio.to_thread(
+            client.complete,
+            "你是 Raven Watch Agents Pro 的模型连接诊断器。",
+            "仅回复 CONNECTED，不要添加其他内容。",
+        )
+    except LLMRequestError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    latency_ms = round((time.perf_counter() - started_at) * 1_000)
+    runtime["usage"] = client.usage_summary()
+    return {
+        "status": "ok",
+        "message": "模型连接成功",
+        "latency_ms": latency_ms,
+        "response_preview": response[:80],
+        "llm": runtime,
+    }
 
 
 @app.get("/api/research/factors")

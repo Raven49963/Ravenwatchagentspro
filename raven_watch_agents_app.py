@@ -1324,13 +1324,19 @@ class RavenWatchAgentsDesktopApp:
     def _apply_provider_preset(self, _event=None) -> None:
         urls = {
             "OpenAI": "https://api.openai.com/v1",
-            "DeepSeek": "https://api.deepseek.com/v1",
+            "DeepSeek": "https://api.deepseek.com",
             "Qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
             "Ollama": "http://localhost:11434/v1",
         }
         selected = self.provider_preset.get()
         if selected in urls:
             self.llm_base_url.set(urls[selected])
+        if selected == "DeepSeek" and self.llm_model.get().strip() in {
+            "",
+            "deepseek-chat",
+            "deepseek-reasoner",
+        }:
+            self.llm_model.set("deepseek-v4-flash")
 
     def _choose_csv(self) -> None:
         path = filedialog.askopenfilename(
@@ -1461,6 +1467,11 @@ class RavenWatchAgentsDesktopApp:
                     api_key=request_data.llm_api_key,
                     temperature=request_data.llm_temperature,
                     timeout_seconds=request_data.llm_timeout,
+                    provider_id=(
+                        "deepseek"
+                        if "api.deepseek.com" in request_data.llm_base_url.lower()
+                        else "custom"
+                    ),
                 ).validate()
         except (TypeError, ValueError) as exc:
             messagebox.showerror("无法开始投研", str(exc))
@@ -1508,6 +1519,11 @@ class RavenWatchAgentsDesktopApp:
                         api_key=request_data.llm_api_key,
                         temperature=request_data.llm_temperature,
                         timeout_seconds=request_data.llm_timeout,
+                        provider_id=(
+                            "deepseek"
+                            if "api.deepseek.com" in request_data.llm_base_url.lower()
+                            else "custom"
+                        ),
                     )
                 )
             workflow = RavenWatchAgentsWorkflow(

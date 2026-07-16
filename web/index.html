@@ -49,7 +49,7 @@
       </div>
       <strong>A股 · 美股 · 港股 · 全球 ETF</strong>
       <span id="sidebar-provider">等待数据源</span>
-      <small>v1.6 local evidence</small>
+      <small>v1.7 DeepSeek V4</small>
     </div>
   </aside>
 
@@ -565,7 +565,8 @@
           </label>
           <label class="settings-field settings-field-wide">
             <span>模型 ID</span>
-            <input id="model-input" type="text" maxlength="160" placeholder="填写模型 ID" autocomplete="off" spellcheck="false">
+            <input id="model-input" type="text" maxlength="160" placeholder="填写模型 ID" list="model-suggestions" autocomplete="off" spellcheck="false">
+            <datalist id="model-suggestions"></datalist>
           </label>
           <label class="settings-field settings-field-endpoint">
             <span>兼容接口</span>
@@ -593,6 +594,22 @@
               <option value="180">180 秒</option>
             </select>
           </label>
+          <div id="deepseek-settings" class="deepseek-settings is-hidden">
+            <label class="settings-field">
+              <span>思考模式</span>
+              <select id="thinking-mode-select">
+                <option value="enabled" selected>启用</option>
+                <option value="disabled">关闭</option>
+              </select>
+            </label>
+            <label class="settings-field">
+              <span>推理强度</span>
+              <select id="reasoning-effort-select">
+                <option value="high" selected>High</option>
+                <option value="max">Max</option>
+              </select>
+            </label>
+          </div>
         </div>
       </section>
 
@@ -644,6 +661,9 @@
 
       <div class="dialog-actions">
         <span id="provider-key-status" class="dialog-status"><i data-lucide="shield-check"></i> 离线规则无需密钥</span>
+        <button id="test-provider-button" class="secondary-button is-hidden" type="button">
+          <i data-lucide="plug-zap"></i><span>测试连接</span>
+        </button>
         <button id="cancel-settings-button" class="secondary-button" type="button">取消</button>
         <button id="start-research-button" class="primary-button" type="submit">
           <i data-lucide="play"></i><span>启动 12 个角色</span>

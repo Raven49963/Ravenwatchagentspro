@@ -413,6 +413,12 @@ class WebServiceTests(unittest.TestCase):
         providers = {item["id"]: item for item in payload["providers"]}
         self.assertEqual(set(providers), {"openai", "deepseek", "qwen", "ollama"})
         self.assertFalse(providers["ollama"]["requires_api_key"])
+        self.assertEqual(providers["deepseek"]["default_model"], "deepseek-v4-flash")
+        self.assertEqual(
+            providers["deepseek"]["recommended_models"],
+            ["deepseek-v4-flash", "deepseek-v4-pro"],
+        )
+        self.assertTrue(providers["deepseek"]["supports_thinking"])
         self.assertTrue(all("api_key" not in item for item in payload["providers"]))
 
     def test_market_service_caches_news_and_supports_forced_refresh(self) -> None:
@@ -566,6 +572,7 @@ class WebServiceTests(unittest.TestCase):
         self.assertTrue(all(item["authorization"] == "Bearer test-secret-key" for item in requests))
         self.assertTrue(all(item["body"]["model"] == "test-model" for item in requests))
         self.assertEqual(result["agent_summary"]["status_counts"], {"completed": 12})
+        self.assertEqual(result["llm"]["usage"]["requests"], 12)
         self.assertTrue(result["agent_summary"]["all_completed"])
         self.assertEqual(len([item for item in progress if item.status == "completed"]), 12)
         self.assertNotIn("test-secret-key", json.dumps(result, ensure_ascii=False))

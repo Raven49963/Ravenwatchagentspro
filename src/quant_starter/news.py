@@ -22,11 +22,11 @@ import xml.etree.ElementTree as ET
 MAX_RESPONSE_BYTES = 2_000_000
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 Chrome/126.0 Safari/537.36 RavenWatchAgentsPro/1.6"
+    "AppleWebKit/537.36 Chrome/126.0 Safari/537.36 RavenWatchAgentsPro/1.7"
 )
 SEC_USER_AGENT = os.environ.get(
     "RAVENWATCHAGENTSPRO_SEC_USER_AGENT",
-    "RavenWatchAgentsPro/1.6 quant-research contact@example.com",
+    "RavenWatchAgentsPro/1.7 quant-research contact@example.com",
 ).strip()
 
 

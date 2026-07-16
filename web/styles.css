@@ -2293,6 +2293,14 @@ tr:last-child td {
   grid-column: span 2;
 }
 
+.deepseek-settings {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding-top: 2px;
+}
+
 .settings-field input:not([type="range"]),
 .settings-field select {
   width: 100%;
@@ -2312,6 +2320,11 @@ tr:last-child td {
 
 .settings-field option {
   background: var(--surface-raised);
+}
+
+.settings-field select:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
 }
 
 .secret-input {
@@ -2537,6 +2550,32 @@ tr:last-child td {
   height: 14px;
   flex: 0 0 auto;
   color: var(--accent);
+}
+
+.dialog-status.is-success {
+  color: var(--positive);
+}
+
+.dialog-status.is-success svg {
+  color: var(--positive);
+}
+
+.dialog-status.is-error {
+  color: var(--negative);
+}
+
+.dialog-status.is-error svg {
+  color: var(--negative);
+}
+
+.dialog-status.is-busy svg {
+  animation: provider-status-spin 900ms linear infinite;
+}
+
+@keyframes provider-status-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .secondary-button {
@@ -3334,6 +3373,10 @@ tr:last-child td {
 
   .online-model-settings,
   .execution-options {
+    grid-template-columns: 1fr;
+  }
+
+  .deepseek-settings {
     grid-template-columns: 1fr;
   }
 
