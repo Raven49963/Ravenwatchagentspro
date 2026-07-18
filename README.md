@@ -313,6 +313,8 @@ dist\RavenWatchAgentsCN\RavenWatchAgentsCN.exe
 
 ## 代码结构
 
+模块依赖、评分语义与扩展约定见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+
 ```text
 raven_watch_agents_app.py          经典 Tkinter 桌面研究与回测入口
 web_desktop_app.py                 WebView2 桌面入口与本地 API 隔离
@@ -327,6 +329,8 @@ src/quant_starter/factors.py       27 因子、市场状态、5 策略融合与 
 src/quant_starter/news.py          多市场新闻、官方公告、事件聚类与五源交叉验证
 src/quant_starter/research_data.py 多市场基本面、字段级证据与质量评分
 src/quant_starter/local_evidence.py 本地新闻、基本面与综合证据评分
+src/quant_starter/scoring.py       方向、评级、阈值与可靠度校准契约
+src/quant_starter/numeric.py       有限数值、边界与秩相关公共工具
 src/quant_starter/instrument_catalog.py 四市场证券目录、在线刷新与离线缓存
 src/quant_starter/walk_forward.py 滚动样本外选择、成本压力与 bootstrap 风险
 src/quant_starter/strategies.py    均线、动量、风险调整动量

@@ -1,37 +1,29 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import math
 import re
 from typing import Any, Callable
 
-
-def _finite(value: Any) -> float | None:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if math.isfinite(number) else None
-
-
-def _clamp(value: float, lower: float = -100.0, upper: float = 100.0) -> float:
-    return min(upper, max(lower, value))
-
-
-def _rating_score(directional_score: float) -> float:
-    return _clamp(50.0 + _clamp(directional_score) / 2.0, 0.0, 100.0)
+from .numeric import clamp, finite_float
+from .scoring import (
+    DirectionBand,
+    calibrate_direction,
+    clip_direction,
+    direction_band,
+    direction_to_rating,
+)
 
 
 def _direction_phrase(score: float) -> str:
-    if score >= 25:
-        return "明显偏多"
-    if score >= 8:
-        return "略偏多"
-    if score > -8:
-        return "中性"
-    if score > -25:
-        return "略偏空"
-    return "明显偏空"
+    return {
+        DirectionBand.STRONG_BULLISH: "明显偏多",
+        DirectionBand.BULLISH: "略偏多",
+        DirectionBand.NEUTRAL: "中性",
+        DirectionBand.BEARISH: "略偏空",
+        DirectionBand.STRONG_BEARISH: "明显偏空",
+    }[direction_band(score)]
 
 
 def _piecewise(value: float, points: tuple[tuple[float, float], ...]) -> float:
@@ -61,7 +53,7 @@ def _extract(
     aliases: tuple[tuple[str, float], ...],
 ) -> tuple[float | None, str, str]:
     for key, scale in aliases:
-        value = _finite(fields.get(key))
+        value = finite_float(fields.get(key))
         if value is not None:
             return value * scale, field_sources.get(key, ""), key
     return None, "", ""
@@ -289,9 +281,9 @@ def assess_fundamentals(snapshot: dict[str, Any]) -> dict[str, Any]:
                 }
             )
             continue
-        score = round(_clamp(float(spec["score"](value))), 2)
+        score = round(clip_direction(float(spec["score"](value))), 2)
         quality_score = int(evidence_quality.get("quality_score") or 65)
-        reliability = _clamp(quality_score / 100, 0.2, 1.0)
+        reliability = clamp(quality_score / 100, 0.2, 1.0)
         category_values[spec["category"]].append((score, reliability))
         metrics.append(
             {
@@ -355,11 +347,11 @@ def assess_fundamentals(snapshot: dict[str, Any]) -> dict[str, Any]:
             freshness = max(0.55, 1.0 - max(0, age_days - 180) / 1_100)
         except ValueError:
             freshness = 0.85
-    data_quality = _finite(quality_payload.get("score"))
+    data_quality = finite_float(quality_payload.get("score"))
     if data_quality is None:
         data_quality = 100 * (0.72 + 0.28 * provider_ratio) * freshness
     confidence = round(
-        100 * coverage**0.65 * (0.42 + 0.58 * _clamp(data_quality / 100, 0.0, 1.0))
+        100 * coverage**0.65 * (0.42 + 0.58 * clamp(data_quality / 100, 0.0, 1.0))
     )
     score = round(weighted_score / available_weight, 2) if available_weight else 0.0
     if available_metrics == 0:
@@ -384,9 +376,9 @@ def assess_fundamentals(snapshot: dict[str, Any]) -> dict[str, Any]:
     return {
         "available": available_metrics > 0,
         "company": company,
-        "score": round(_rating_score(score), 2),
+        "score": round(direction_to_rating(score), 2),
         "directional_score": score,
-        "rating_score": round(_rating_score(score), 2),
+        "rating_score": round(direction_to_rating(score), 2),
         "label": label,
         "confidence": confidence,
         "coverage": round(coverage, 6),
@@ -470,9 +462,9 @@ def assess_news(feed: dict[str, Any], *, now: datetime | None = None) -> dict[st
         if "官方" in credibility or "法定" in credibility or "监管" in credibility:
             source_weight = max(source_weight, 1.25)
         source_count = max(1, int(article.get("verification_count") or 1))
-        verification_score = _finite(article.get("verification_score"))
+        verification_score = finite_float(article.get("verification_score"))
         verification_reliability = (
-            _clamp(verification_score / 100, 0.25, 1.0)
+            clamp(verification_score / 100, 0.25, 1.0)
             if verification_score is not None
             else min(1.0, 0.30 + 0.14 * source_count)
         )
@@ -560,9 +552,9 @@ def assess_news(feed: dict[str, Any], *, now: datetime | None = None) -> dict[st
     )[:3]
     return {
         "available": bool(articles),
-        "score": round(_rating_score(score), 2),
+        "score": round(direction_to_rating(score), 2),
         "directional_score": score,
-        "rating_score": round(_rating_score(score), 2),
+        "rating_score": round(direction_to_rating(score), 2),
         "label": label,
         "confidence": confidence,
         "article_count": len(articles),
@@ -591,6 +583,237 @@ def assess_news(feed: dict[str, Any], *, now: datetime | None = None) -> dict[st
     }
 
 
+LOCAL_EVIDENCE_WEIGHTS = {
+    "technical": 0.35,
+    "quant": 0.30,
+    "fundamentals": 0.20,
+    "news": 0.15,
+}
+
+
+@dataclass(frozen=True)
+class _EvidenceComponentInput:
+    key: str
+    label: str
+    score: float
+    reliability: float
+    available: bool
+    detail: str
+
+
+@dataclass(frozen=True)
+class _EvidenceAggregation:
+    components: list[dict[str, Any]]
+    raw_directional_score: float
+    agreement: float
+    overall_reliability: float
+    coverage: float
+
+
+def _evidence_component_inputs(
+    *,
+    technical_score: float | int | None,
+    technical_confidence: float | int | None,
+    quant_validation: dict[str, Any],
+    fundamentals: dict[str, Any],
+    news: dict[str, Any],
+) -> tuple[_EvidenceComponentInput, ...]:
+    technical_value = finite_float(technical_score)
+    technical_reliability = clamp(
+        (finite_float(technical_confidence) or 0.0) / 100,
+        0.0,
+        1.0,
+    )
+    quant_available = bool(quant_validation and quant_validation.get("available"))
+    quant_score = 100 * (
+        finite_float(quant_validation.get("latest_score")) or 0.0
+    )
+    quant_reliability = (
+        clamp(
+            (finite_float(quant_validation.get("robustness_score")) or 0.0)
+            / 100,
+            0.0,
+            1.0,
+        )
+        if quant_available
+        else 0.0
+    )
+    fundamental_available = bool(fundamentals.get("available"))
+    news_available = bool(news.get("available"))
+    return (
+        _EvidenceComponentInput(
+            key="technical",
+            label="技术因子",
+            score=technical_value or 0.0,
+            reliability=technical_reliability,
+            available=technical_value is not None,
+            detail="27 项价格、波动、流动性与尾部风险因子",
+        ),
+        _EvidenceComponentInput(
+            key="quant",
+            label="样本外验证",
+            score=quant_score,
+            reliability=quant_reliability,
+            available=quant_available,
+            detail=(
+                f"{len(quant_validation.get('folds') or [])} 折 · "
+                f"{quant_validation.get('verdict', '不可用')}"
+            ),
+        ),
+        _EvidenceComponentInput(
+            key="fundamentals",
+            label="基本面",
+            score=finite_float(
+                fundamentals.get("directional_score", fundamentals.get("score"))
+            )
+            or 0.0,
+            reliability=(finite_float(fundamentals.get("confidence")) or 0.0)
+            / 100,
+            available=fundamental_available,
+            detail=(
+                f"{fundamentals.get('available_metrics', 0)} / "
+                f"{fundamentals.get('total_metrics', 0)} 项"
+            ),
+        ),
+        _EvidenceComponentInput(
+            key="news",
+            label="新闻事件",
+            score=finite_float(news.get("directional_score", news.get("score")))
+            or 0.0,
+            reliability=(finite_float(news.get("confidence")) or 0.0) / 100,
+            available=news_available,
+            detail=(
+                f"{news.get('article_count', 0)} 条 · 官方占比 "
+                f"{(finite_float(news.get('official_ratio')) or 0.0):.0%}"
+            ),
+        ),
+    )
+
+
+def _aggregate_evidence(
+    inputs: tuple[_EvidenceComponentInput, ...],
+) -> _EvidenceAggregation:
+    components: list[dict[str, Any]] = []
+    evidence_weights: dict[str, float] = {}
+    denominator = 0.0
+    numerator = 0.0
+    coverage = 0.0
+    confidence_mass = 0.0
+    for item in inputs:
+        reliability = clamp(item.reliability, 0.0, 1.0)
+        base_weight = LOCAL_EVIDENCE_WEIGHTS[item.key]
+        evidence_weight = base_weight * reliability if item.available else 0.0
+        denominator += evidence_weight
+        numerator += item.score * evidence_weight
+        evidence_weights[item.key] = evidence_weight
+        if item.available:
+            coverage += base_weight
+        confidence_mass += evidence_weight
+        components.append(
+            {
+                "key": item.key,
+                "label": item.label,
+                "available": item.available,
+                "score": (
+                    round(direction_to_rating(item.score), 2)
+                    if item.available
+                    else None
+                ),
+                "directional_score": (
+                    round(clip_direction(item.score), 2)
+                    if item.available
+                    else None
+                ),
+                "direction": (
+                    _direction_phrase(item.score) if item.available else "数据不足"
+                ),
+                "confidence": round(reliability * 100) if item.available else 0,
+                "base_weight": base_weight,
+                "effective_weight": 0.0,
+                "detail": item.detail,
+            }
+        )
+
+    raw_directional_score = (
+        clip_direction(numerator / denominator) if denominator else 0.0
+    )
+    for component in components:
+        key = component["key"]
+        if component["available"] and denominator:
+            component["effective_weight"] = round(
+                evidence_weights[key] / denominator,
+                6,
+            )
+    weighted_deviation = sum(
+        evidence_weights[component["key"]]
+        / denominator
+        * abs(float(component["directional_score"]) - raw_directional_score)
+        for component in components
+        if component["available"] and denominator
+    )
+    agreement = clamp(1.0 - weighted_deviation / 100.0, 0.0, 1.0)
+    overall_reliability = clamp(
+        confidence_mass * (0.65 + 0.35 * agreement),
+        0.0,
+        1.0,
+    )
+    return _EvidenceAggregation(
+        components=components,
+        raw_directional_score=raw_directional_score,
+        agreement=agreement,
+        overall_reliability=overall_reliability,
+        coverage=coverage,
+    )
+
+
+def _local_evidence_label(directional_score: float) -> str:
+    return {
+        DirectionBand.STRONG_BULLISH: "多头证据占优",
+        DirectionBand.BULLISH: "证据略偏多",
+        DirectionBand.NEUTRAL: "证据中性",
+        DirectionBand.BEARISH: "证据略偏空",
+        DirectionBand.STRONG_BEARISH: "空头风险占优",
+    }[direction_band(directional_score)]
+
+
+def _component_conflicts(components: list[dict[str, Any]]) -> list[str]:
+    available_scores = [
+        component["directional_score"]
+        for component in components
+        if component["available"]
+    ]
+    if not available_scores or max(available_scores) - min(available_scores) < 60:
+        return []
+    high = max(
+        (item for item in components if item["available"]),
+        key=lambda item: item["directional_score"],
+    )
+    low = min(
+        (item for item in components if item["available"]),
+        key=lambda item: item["directional_score"],
+    )
+    return [f"{high['label']}与{low['label']}方向分歧较大"]
+
+
+def _local_evidence_summary(
+    *,
+    score: float,
+    directional_score: float,
+    confidence: int,
+    conflicts: list[str],
+    missing: list[str],
+) -> str:
+    summary = (
+        f"本地研判评分 {score:.1f}/100，方向{_direction_phrase(directional_score)}"
+        f"（强度 {abs(directional_score):.1f}），可信度 {confidence}%"
+    )
+    if conflicts:
+        return summary + f"；{conflicts[0]}。"
+    if missing:
+        return summary + f"；{ '、'.join(missing) }缺失，已从权重中剔除。"
+    return summary + "；四类证据均已纳入并按各自可靠度加权。"
+
+
 def build_local_evidence(
     *,
     technical_score: float | int | None,
@@ -599,168 +822,59 @@ def build_local_evidence(
     fundamentals: dict[str, Any],
     news: dict[str, Any],
 ) -> dict[str, Any]:
-    base_weights = {
-        "technical": 0.35,
-        "quant": 0.30,
-        "fundamentals": 0.20,
-        "news": 0.15,
-    }
-    technical_value = _finite(technical_score)
-    technical_reliability = _clamp((_finite(technical_confidence) or 0.0) / 100, 0.0, 1.0)
-    quant_available = bool(quant_validation and quant_validation.get("available"))
-    quant_score = 100 * (_finite(quant_validation.get("latest_score")) or 0.0)
-    quant_reliability = (
-        _clamp((_finite(quant_validation.get("robustness_score")) or 0.0) / 100, 0.0, 1.0)
-        if quant_available
-        else 0.0
+    inputs = _evidence_component_inputs(
+        technical_score=technical_score,
+        technical_confidence=technical_confidence,
+        quant_validation=quant_validation,
+        fundamentals=fundamentals,
+        news=news,
     )
-    fundamental_available = bool(fundamentals.get("available"))
-    news_available = bool(news.get("available"))
-    component_data = (
-        (
-            "technical",
-            "技术因子",
-            technical_value or 0.0,
-            technical_reliability,
-            technical_value is not None,
-            "27 项价格、波动、流动性与尾部风险因子",
-        ),
-        (
-            "quant",
-            "样本外验证",
-            quant_score,
-            quant_reliability,
-            quant_available,
-            f"{len(quant_validation.get('folds') or [])} 折 · {quant_validation.get('verdict', '不可用')}",
-        ),
-        (
-            "fundamentals",
-            "基本面",
-            _finite(
-                fundamentals.get("directional_score", fundamentals.get("score"))
-            )
-            or 0.0,
-            (_finite(fundamentals.get("confidence")) or 0.0) / 100,
-            fundamental_available,
-            f"{fundamentals.get('available_metrics', 0)} / {fundamentals.get('total_metrics', 0)} 项",
-        ),
-        (
-            "news",
-            "新闻事件",
-            _finite(news.get("directional_score", news.get("score"))) or 0.0,
-            (_finite(news.get("confidence")) or 0.0) / 100,
-            news_available,
-            f"{news.get('article_count', 0)} 条 · 官方占比 {(_finite(news.get('official_ratio')) or 0.0):.0%}",
-        ),
+    aggregation = _aggregate_evidence(inputs)
+    calibrated = calibrate_direction(
+        aggregation.raw_directional_score,
+        aggregation.overall_reliability,
+        minimum_calibration=0.35,
     )
-    components: list[dict[str, Any]] = []
-    evidence_weights: dict[str, float] = {}
-    denominator = 0.0
-    numerator = 0.0
-    coverage = 0.0
-    confidence_mass = 0.0
-    for key, label, score, reliability, available, detail in component_data:
-        reliability = _clamp(reliability, 0.0, 1.0)
-        base_weight = base_weights[key]
-        evidence_weight = base_weight * reliability if available else 0.0
-        denominator += evidence_weight
-        numerator += score * evidence_weight
-        evidence_weights[key] = evidence_weight
-        if available:
-            coverage += base_weight
-        confidence_mass += evidence_weight
-        components.append(
-            {
-                "key": key,
-                "label": label,
-                "available": available,
-                "score": round(_rating_score(score), 2) if available else None,
-                "directional_score": round(_clamp(score), 2) if available else None,
-                "direction": _direction_phrase(score) if available else "数据不足",
-                "confidence": round(reliability * 100) if available else 0,
-                "base_weight": base_weight,
-                "effective_weight": 0.0,
-                "detail": detail,
-            }
-        )
-    raw_directional_score = _clamp(numerator / denominator) if denominator else 0.0
-    for component in components:
-        key = component["key"]
-        if component["available"] and denominator:
-            component["effective_weight"] = round(evidence_weights[key] / denominator, 6)
-    weighted_deviation = sum(
-        evidence_weights[component["key"]]
-        / denominator
-        * abs(float(component["directional_score"]) - raw_directional_score)
-        for component in components
-        if component["available"] and denominator
-    )
-    agreement = _clamp(1.0 - weighted_deviation / 100.0, 0.0, 1.0)
-    overall_reliability = _clamp(
-        confidence_mass * (0.65 + 0.35 * agreement), 0.0, 1.0
-    )
-    calibration_factor = 0.35 + 0.65 * overall_reliability
-    directional_score = _clamp(raw_directional_score * calibration_factor)
-    score = _rating_score(directional_score)
-    confidence = round(100 * overall_reliability)
-    if directional_score >= 25:
-        label = "多头证据占优"
-    elif directional_score >= 8:
-        label = "证据略偏多"
-    elif directional_score > -8:
-        label = "证据中性"
-    elif directional_score > -25:
-        label = "证据略偏空"
-    else:
-        label = "空头风险占优"
-    available_scores = [
-        component["directional_score"]
-        for component in components
-        if component["available"]
+    directional_score = calibrated.directional_score
+    score = direction_to_rating(directional_score)
+    confidence = round(100 * aggregation.overall_reliability)
+    label = _local_evidence_label(directional_score)
+    conflicts = _component_conflicts(aggregation.components)
+    missing = [
+        component["label"]
+        for component in aggregation.components
+        if not component["available"]
     ]
-    conflicts: list[str] = []
-    if available_scores and max(available_scores) - min(available_scores) >= 60:
-        high = max(
-            (item for item in components if item["available"]),
-            key=lambda item: item["directional_score"],
-        )
-        low = min(
-            (item for item in components if item["available"]),
-            key=lambda item: item["directional_score"],
-        )
-        conflicts.append(f"{high['label']}与{low['label']}方向分歧较大")
-    missing = [component["label"] for component in components if not component["available"]]
-    summary = (
-        f"本地研判评分 {score:.1f}/100，方向{_direction_phrase(directional_score)}"
-        f"（强度 {abs(directional_score):.1f}），可信度 {confidence}%"
+    summary = _local_evidence_summary(
+        score=score,
+        directional_score=directional_score,
+        confidence=confidence,
+        conflicts=conflicts,
+        missing=missing,
     )
-    if conflicts:
-        summary += f"；{conflicts[0]}。"
-    elif missing:
-        summary += f"；{ '、'.join(missing) }缺失，已从权重中剔除。"
-    else:
-        summary += "；四类证据均已纳入并按各自可靠度加权。"
     return {
         "score": round(score, 2),
         "directional_score": round(directional_score, 2),
-        "raw_directional_score": round(raw_directional_score, 2),
-        "signal_strength": round(abs(directional_score), 2),
+        "raw_directional_score": round(calibrated.raw_directional_score, 2),
+        "signal_strength": round(calibrated.signal_strength, 2),
         "label": label,
         "confidence": confidence,
-        "agreement": round(agreement, 6),
-        "calibration_factor": round(calibration_factor, 6),
-        "coverage": round(coverage, 6),
-        "components": components,
+        "agreement": round(aggregation.agreement, 6),
+        "calibration_factor": round(calibrated.calibration_factor, 6),
+        "coverage": round(aggregation.coverage, 6),
+        "components": aggregation.components,
         "conflicts": conflicts,
         "missing_components": missing,
         "summary": summary,
         "method": {
-            "weights": base_weights,
+            "weights": dict(LOCAL_EVIDENCE_WEIGHTS),
             "score_scale": "0-100 rating; 50 is neutral",
             "direction_scale": "-100 bearish to +100 bullish",
             "missing_policy": "exclude and renormalize",
             "confidence_policy": "source reliability multiplied by cross-component agreement",
-            "calibration_policy": "direction shrinks toward neutral when evidence is weak or conflicting",
+            "calibration_policy": (
+                "direction shrinks toward neutral when evidence is weak or conflicting"
+            ),
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         },
     }

@@ -7,6 +7,15 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from .numeric import rank_correlation
+from .scoring import (
+    DirectionBand,
+    calibrate_direction,
+    clip_direction,
+    direction_band,
+    direction_to_rating,
+)
+
 
 @dataclass(frozen=True)
 class FactorSignal:
@@ -283,36 +292,14 @@ def _validated_bars(bars: pd.DataFrame) -> pd.DataFrame:
     return frame
 
 
-def _clip(value: float, limit: float = 100.0) -> float:
-    if not math.isfinite(value):
-        return 0.0
-    return float(max(-limit, min(limit, value)))
-
-
-def _rating_score(directional_score: float) -> float:
-    """Map a signed market direction to an unambiguous 0-100 rating."""
-    return float(max(0.0, min(100.0, 50.0 + _clip(directional_score) / 2.0)))
-
-
-def _rank_correlation(left: pd.Series, right: pd.Series) -> float:
-    left_rank = left.rank(method="average")
-    right_rank = right.rank(method="average")
-    if left_rank.nunique(dropna=True) < 2 or right_rank.nunique(dropna=True) < 2:
-        return 0.0
-    value = float(left_rank.corr(right_rank))
-    return value if math.isfinite(value) else 0.0
-
-
 def _direction_phrase(score: float) -> str:
-    if score >= 25:
-        return "多头方向较强"
-    if score >= 8:
-        return "略偏多"
-    if score > -8:
-        return "方向中性"
-    if score > -25:
-        return "略偏空"
-    return "空头方向较强"
+    return {
+        DirectionBand.STRONG_BULLISH: "多头方向较强",
+        DirectionBand.BULLISH: "略偏多",
+        DirectionBand.NEUTRAL: "方向中性",
+        DirectionBand.BEARISH: "略偏空",
+        DirectionBand.STRONG_BEARISH: "空头方向较强",
+    }[direction_band(score)]
 
 
 def _latest(series: pd.Series, default: float = 0.0) -> float:
@@ -448,7 +435,7 @@ def _factor_signal(
     available: bool = True,
 ) -> FactorSignal:
     metadata = FACTOR_REFERENCE_CATALOG.get(key, {})
-    normalized = _clip(score) if available else 0.0
+    normalized = clip_direction(score) if available else 0.0
     return FactorSignal(
         key=key,
         name=name,
@@ -1001,7 +988,7 @@ def build_strategy_signals(
         StrategySignal(
             key=key,
             name=STRATEGY_NAMES[key],
-            score=round(_clip(score), 2),
+            score=round(clip_direction(score), 2),
             weight=weights[key],
             action=_action(score),
             rationale=rationales[key],
@@ -1106,7 +1093,7 @@ def mine_time_series_factors(
         sample = pd.concat([series.rename("factor"), forward], axis=1).dropna()
         if len(sample) < minimum_observations:
             continue
-        ic = _rank_correlation(sample["factor"], sample["forward"])
+        ic = rank_correlation(sample["factor"], sample["forward"])
         denominator = max(1e-9, 1 - ic * ic)
         t_statistic = ic * math.sqrt(max(len(sample) - 2, 1) / denominator)
         nonzero = sample[(sample["factor"] != 0) & (sample["forward"] != 0)]
@@ -1123,7 +1110,7 @@ def mine_time_series_factors(
             ]
             if len(fold) < 20:
                 continue
-            fold_ics.append(_rank_correlation(fold["factor"], fold["forward"]))
+            fold_ics.append(rank_correlation(fold["factor"], fold["forward"]))
         meaningful_signs = [np.sign(value) for value in fold_ics if abs(value) >= 0.01]
         sign_consistency = (
             max(0.0, float(np.mean(meaningful_signs))) if meaningful_signs else 0.0
@@ -1234,16 +1221,29 @@ def build_factor_history(
     return history
 
 
-def analyze_composite(
-    bars: pd.DataFrame,
-    benchmark: pd.Series | None = None,
-) -> CompositeResearch:
-    frame = _validated_bars(bars)
-    factors = calculate_factor_signals(frame, benchmark)
-    regime = detect_market_regime(frame)
-    strategies = build_strategy_signals(factors, regime)
-    mining = mine_time_series_factors(frame)
-    raw_directional_score = _clip(
+@dataclass(frozen=True)
+class _CompositeRiskProfile:
+    volatility: float
+    downside_volatility: float
+    drawdown: float
+    liquidity_score: float
+    expected_shortfall: float
+    ulcer_index: float
+    gap_risk: float
+    risk_penalty: float
+
+
+@dataclass(frozen=True)
+class _CompositeEvidenceQuality:
+    factor_stability: float
+    factor_coverage: float
+    reliability: float
+
+
+def _strategy_consensus(
+    strategies: tuple[StrategySignal, ...],
+) -> tuple[float, float]:
+    raw_directional_score = clip_direction(
         sum(item.score * item.weight for item in strategies)
     )
     gross_direction = sum(abs(item.score) * item.weight for item in strategies)
@@ -1252,29 +1252,43 @@ def analyze_composite(
         if gross_direction > 1e-9
         else 0.5
     )
+    return raw_directional_score, agreement
 
-    risk_factors = {item.key: item for item in factors}
-    volatility = max(
-        risk_factors["volatility_quality"].value,
-        risk_factors["parkinson_quality"].value,
-        0.05,
+
+def _composite_risk_profile(
+    factors: tuple[FactorSignal, ...],
+) -> _CompositeRiskProfile:
+    by_key = {item.key: item for item in factors}
+    risk_penalty = max(0.0, -by_key["volatility_quality"].score) * 0.10
+    risk_penalty += max(0.0, -by_key["parkinson_quality"].score) * 0.05
+    risk_penalty += max(0.0, -by_key["downside_quality"].score) * 0.08
+    risk_penalty += max(0.0, -by_key["drawdown_quality"].score) * 0.08
+    risk_penalty += max(0.0, -by_key["amihud_liquidity"].score) * 0.04
+    risk_penalty += max(0.0, -by_key["expected_shortfall_quality"].score) * 0.06
+    risk_penalty += max(0.0, -by_key["ulcer_quality"].score) * 0.05
+    risk_penalty += max(0.0, -by_key["gap_risk_quality"].score) * 0.04
+    return _CompositeRiskProfile(
+        volatility=max(
+            by_key["volatility_quality"].value,
+            by_key["parkinson_quality"].value,
+            0.05,
+        ),
+        downside_volatility=max(by_key["downside_quality"].value, 0.0),
+        drawdown=min(by_key["drawdown_quality"].value, 0.0),
+        liquidity_score=by_key["amihud_liquidity"].score,
+        expected_shortfall=max(by_key["expected_shortfall_quality"].value, 0.0),
+        ulcer_index=max(by_key["ulcer_quality"].value, 0.0),
+        gap_risk=max(by_key["gap_risk_quality"].value, 0.0),
+        risk_penalty=risk_penalty,
     )
-    downside_volatility = max(risk_factors["downside_quality"].value, 0.0)
-    drawdown = min(risk_factors["drawdown_quality"].value, 0.0)
-    expected_shortfall = max(
-        risk_factors["expected_shortfall_quality"].value,
-        0.0,
-    )
-    ulcer_index = max(risk_factors["ulcer_quality"].value, 0.0)
-    gap_risk = max(risk_factors["gap_risk_quality"].value, 0.0)
-    risk_penalty = max(0.0, -risk_factors["volatility_quality"].score) * 0.10
-    risk_penalty += max(0.0, -risk_factors["parkinson_quality"].score) * 0.05
-    risk_penalty += max(0.0, -risk_factors["downside_quality"].score) * 0.08
-    risk_penalty += max(0.0, -risk_factors["drawdown_quality"].score) * 0.08
-    risk_penalty += max(0.0, -risk_factors["amihud_liquidity"].score) * 0.04
-    risk_penalty += max(0.0, -risk_factors["expected_shortfall_quality"].score) * 0.06
-    risk_penalty += max(0.0, -risk_factors["ulcer_quality"].score) * 0.05
-    risk_penalty += max(0.0, -risk_factors["gap_risk_quality"].score) * 0.04
+
+
+def _composite_evidence_quality(
+    factors: tuple[FactorSignal, ...],
+    mining: tuple[FactorMiningResult, ...],
+    regime: MarketRegime,
+    agreement: float,
+) -> _CompositeEvidenceQuality:
     stability_values = [
         item.stability_score for item in mining if item.observations >= 80
     ]
@@ -1289,17 +1303,27 @@ def analyze_composite(
         else 0.0
     )
     regime_reliability = max(0.0, min(1.0, regime.confidence / 100))
-    evidence_reliability = (
+    reliability = (
         0.35 * agreement
         + 0.25 * factor_stability
         + 0.25 * factor_coverage
         + 0.15 * regime_reliability
     )
-    calibration_factor = 0.50 + 0.50 * evidence_reliability
-    directional_score = _clip(raw_directional_score * calibration_factor)
+    return _CompositeEvidenceQuality(
+        factor_stability=factor_stability,
+        factor_coverage=factor_coverage,
+        reliability=reliability,
+    )
+
+
+def _composite_confidence(
+    raw_directional_score: float,
+    evidence_reliability: float,
+    risk_penalty: float,
+) -> int:
     signal_clarity = min(1.0, abs(raw_directional_score) / 40.0)
     risk_reliability = max(0.55, 1.0 - min(risk_penalty, 45.0) / 100.0)
-    confidence = round(
+    return round(
         max(
             18.0,
             min(
@@ -1312,25 +1336,31 @@ def analyze_composite(
         )
     )
 
+
+def _target_position(
+    directional_score: float,
+    risk: _CompositeRiskProfile,
+    regime: MarketRegime,
+) -> float:
     if directional_score <= 0:
         base_position = 0.0 if directional_score <= -25 else 0.08
     else:
         base_position = min(0.88, 0.12 + directional_score / 100 * 0.82)
-    volatility_scale = max(0.25, min(1.0, 0.28 / volatility))
+    volatility_scale = max(0.25, min(1.0, 0.28 / risk.volatility))
     downside_scale = max(
         0.35,
-        min(1.0, 0.22 / max(downside_volatility, 0.05)),
+        min(1.0, 0.22 / max(risk.downside_volatility, 0.05)),
     )
-    drawdown_scale = max(0.35, min(1.0, 1 + drawdown * 1.25))
-    liquidity_scale = max(
-        0.55,
-        min(1.0, 1 + risk_factors["amihud_liquidity"].score / 180),
-    )
+    drawdown_scale = max(0.35, min(1.0, 1 + risk.drawdown * 1.25))
+    liquidity_scale = max(0.55, min(1.0, 1 + risk.liquidity_score / 180))
     regime_scale = 0.65 if regime.key == "high_volatility" else 1.0
-    tail_scale = max(0.40, min(1.0, 0.32 / max(expected_shortfall, 0.05)))
-    ulcer_scale = max(0.45, min(1.0, 0.12 / max(ulcer_index, 0.02)))
-    gap_scale = max(0.65, min(1.0, 0.18 / max(gap_risk, 0.03)))
-    target_position = round(
+    tail_scale = max(
+        0.40,
+        min(1.0, 0.32 / max(risk.expected_shortfall, 0.05)),
+    )
+    ulcer_scale = max(0.45, min(1.0, 0.12 / max(risk.ulcer_index, 0.02)))
+    gap_scale = max(0.65, min(1.0, 0.18 / max(risk.gap_risk, 0.03)))
+    return round(
         base_position
         * volatility_scale
         * downside_scale
@@ -1343,6 +1373,8 @@ def analyze_composite(
         4,
     )
 
+
+def _trade_limits(frame: pd.DataFrame, confidence: int) -> tuple[float, float]:
     previous_close = frame["Close"].shift(1)
     true_range = pd.concat(
         [
@@ -1355,51 +1387,81 @@ def analyze_composite(
     atr_pct = _latest(true_range.rolling(14).mean()) / _latest(frame["Close"])
     stop_loss = round(max(0.035, min(0.18, atr_pct * 2.2)), 4)
     take_profit = round(min(0.38, stop_loss * (2.0 if confidence >= 60 else 1.7)), 4)
+    return stop_loss, take_profit
 
-    liquidity_score = risk_factors["amihud_liquidity"].score
+
+def _risk_level(risk: _CompositeRiskProfile) -> str:
     if (
-        volatility >= 0.5
-        or downside_volatility >= 0.35
-        or drawdown <= -0.4
-        or liquidity_score <= -65
-        or expected_shortfall >= 0.55
-        or ulcer_index >= 0.25
-        or gap_risk >= 0.45
+        risk.volatility >= 0.5
+        or risk.downside_volatility >= 0.35
+        or risk.drawdown <= -0.4
+        or risk.liquidity_score <= -65
+        or risk.expected_shortfall >= 0.55
+        or risk.ulcer_index >= 0.25
+        or risk.gap_risk >= 0.45
     ):
-        risk_level = "高"
-    elif (
-        volatility >= 0.3
-        or downside_volatility >= 0.2
-        or drawdown <= -0.22
-        or liquidity_score <= -35
-        or expected_shortfall >= 0.35
-        or ulcer_index >= 0.12
-        or gap_risk >= 0.25
+        return "高"
+    if (
+        risk.volatility >= 0.3
+        or risk.downside_volatility >= 0.2
+        or risk.drawdown <= -0.22
+        or risk.liquidity_score <= -35
+        or risk.expected_shortfall >= 0.35
+        or risk.ulcer_index >= 0.12
+        or risk.gap_risk >= 0.25
     ):
-        risk_level = "中"
-    else:
-        risk_level = "低"
+        return "中"
+    return "低"
+
+
+def analyze_composite(
+    bars: pd.DataFrame,
+    benchmark: pd.Series | None = None,
+) -> CompositeResearch:
+    frame = _validated_bars(bars)
+    factors = calculate_factor_signals(frame, benchmark)
+    regime = detect_market_regime(frame)
+    strategies = build_strategy_signals(factors, regime)
+    mining = mine_time_series_factors(frame)
+
+    raw_directional_score, agreement = _strategy_consensus(strategies)
+    risk = _composite_risk_profile(factors)
+    evidence = _composite_evidence_quality(factors, mining, regime, agreement)
+    calibrated = calibrate_direction(
+        raw_directional_score,
+        evidence.reliability,
+        minimum_calibration=0.50,
+    )
+    directional_score = calibrated.directional_score
+    confidence = _composite_confidence(
+        raw_directional_score,
+        evidence.reliability,
+        risk.risk_penalty,
+    )
+    target_position = _target_position(directional_score, risk, regime)
+    stop_loss, take_profit = _trade_limits(frame, confidence)
+    risk_level = _risk_level(risk)
 
     action = _action(directional_score)
     label = _action_label(directional_score)
     rounded_direction = round(directional_score, 2)
-    rating_score = round(_rating_score(rounded_direction), 2)
+    rating_score = round(direction_to_rating(rounded_direction), 2)
     summary = (
         f"当前处于{regime.name}，研判评分 {rating_score:.1f}/100"
         f"（{_direction_phrase(directional_score)}，方向强度 {abs(directional_score):.1f}），"
-        f"一致度 {agreement:.0%}，历史分段稳定度 {factor_stability:.0%}；"
+        f"一致度 {agreement:.0%}，历史分段稳定度 {evidence.factor_stability:.0%}；"
         f"建议目标仓位 {target_position:.0%}，"
         f"风险等级{risk_level}。"
     )
     return CompositeResearch(
         score=rating_score,
         directional_score=rounded_direction,
-        raw_directional_score=round(raw_directional_score, 2),
-        signal_strength=round(abs(directional_score), 2),
+        raw_directional_score=round(calibrated.raw_directional_score, 2),
+        signal_strength=round(calibrated.signal_strength, 2),
         agreement=round(agreement, 6),
-        factor_stability=round(factor_stability, 6),
-        factor_coverage=round(factor_coverage, 6),
-        calibration_factor=round(calibration_factor, 6),
+        factor_stability=round(evidence.factor_stability, 6),
+        factor_coverage=round(evidence.factor_coverage, 6),
+        calibration_factor=round(calibrated.calibration_factor, 6),
         action=action,
         action_label=label,
         confidence=confidence,
