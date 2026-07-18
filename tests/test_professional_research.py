@@ -56,6 +56,7 @@ from web_app import (
     TTLCache,
     _merge_live_candle,
     _validate_agent_options,
+    app,
     health,
     research_factors,
     research_providers,
@@ -653,6 +654,37 @@ class WebServiceTests(unittest.TestCase):
         self.assertEqual(forced["items"][0]["title"], "NVIDIA update")
         self.assertEqual(loader.call_count, 2)
 
+    def test_market_service_caches_polymarket_and_exposes_assessment(self) -> None:
+        snapshot = mock.Mock()
+        snapshot.to_dict.return_value = {
+            "market": "nasdaq",
+            "symbol": "NVDA",
+            "source_mode": "live",
+            "items": [],
+        }
+        assessment = {
+            "available": False,
+            "source_mode": "live",
+            "market_count": 0,
+            "included_market_count": 0,
+            "markets": [],
+            "process": [],
+        }
+        market_service = MarketService()
+        with (
+            mock.patch("web_app.fetch_polymarket_snapshot", return_value=snapshot) as loader,
+            mock.patch("web_app.assess_polymarket", return_value=assessment),
+        ):
+            first = market_service.get_prediction_markets("nasdaq", "NVDA")
+            second = market_service.get_prediction_markets("nasdaq", "NVDA")
+            forced = market_service.get_prediction_markets(
+                "nasdaq", "NVDA", force=True
+            )
+        self.assertEqual(first, second)
+        self.assertEqual(first["assessment"], assessment)
+        self.assertEqual(forced["source_mode"], "live")
+        self.assertEqual(loader.call_count, 2)
+
     def test_online_news_replaces_stale_evidence_warning(self) -> None:
         bars = generate_demo_ohlcv("ALPHA").tail(300)
         bars.attrs["provider"] = "test-bars"
@@ -668,9 +700,37 @@ class WebServiceTests(unittest.TestCase):
             ],
             "warnings": [],
         }
+        prediction_payload = {
+            "assessment": {
+                "available": True,
+                "source_mode": "cache-offline",
+                "directional_score": 20,
+                "confidence": 60,
+                "included_market_count": 1,
+                "market_count": 1,
+                "markets": [
+                    {
+                        "included": True,
+                        "question": "Will the company surpass expectations?",
+                        "yes_probability": 0.70,
+                        "directional_score": 40,
+                        "quality_score": 75,
+                        "contribution": 40,
+                    }
+                ],
+                "process": [{"step": 1, "title": "发现", "result": "纳入 1 个"}],
+                "summary": "预测市场略偏多。",
+                "warnings": [],
+            }
+        }
         with (
             mock.patch.object(market_service, "get_bars", return_value=bars),
             mock.patch.object(market_service, "get_news", return_value=online_feed),
+            mock.patch.object(
+                market_service,
+                "get_prediction_markets",
+                return_value=prediction_payload,
+            ),
             mock.patch(
                 "web_app.fetch_research_evidence",
                 return_value=(
@@ -686,6 +746,9 @@ class WebServiceTests(unittest.TestCase):
                 options=AgentResearchOptions(fetch_details=True),
             )
         self.assertEqual(result["evidence"]["news_items"], 1)
+        self.assertEqual(result["evidence"]["prediction_markets"], 1)
+        self.assertEqual(result["prediction_markets"]["source_mode"], "cache-offline")
+        self.assertIn("Will the company", result["reports"]["sentiment"])
         self.assertTrue(
             any("基本面暂不可用" in warning for warning in result["warnings"])
         )
@@ -890,6 +953,10 @@ class WebServiceTests(unittest.TestCase):
             payload["markets"], ["a-share", "nasdaq", "hk", "global"]
         )
         self.assertTrue(payload["instrument_search"])
+        self.assertTrue(payload["polymarket_evidence"])
+        self.assertTrue(payload["offline_evidence_cache"])
+        self.assertTrue(payload["auditable_deliberation_process"])
+        self.assertIn("/api/polymarket", {route.path for route in app.routes})
 
 
 if __name__ == "__main__":

@@ -109,7 +109,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def _verify_and_close_window(window, result: dict[str, object]) -> None:
-    deadline = time.monotonic() + 25
+    deadline = time.monotonic() + 45
     last_error: Exception | None = None
     try:
         while time.monotonic() < deadline:
@@ -118,7 +118,9 @@ def _verify_and_close_window(window, result: dict[str, object]) -> None:
                     "document.readyState === 'complete' "
                     "&& Boolean(window.echarts) "
                     "&& Boolean(window.lucide) "
-                    "&& Boolean(document.querySelector('#kline-chart canvas'))"
+                    "&& Boolean(document.querySelector('#kline-chart canvas')) "
+                    "&& document.querySelectorAll('.evidence-component-row').length === 5 "
+                    "&& document.querySelectorAll('#deliberation-process-list li').length === 5"
                 )
                 if ready:
                     result["ready"] = True
@@ -142,7 +144,21 @@ def main() -> None:
     try:
         health = server.start()
         if args.smoke_test:
-            logging.info("Smoke test passed: %s", health)
+            url = (
+                f"{server.base_url}/api/polymarket?market=nasdaq&symbol=NVDA"
+                f"&offline=true&desktop_token={quote(token)}"
+            )
+            with urlopen(url, timeout=10) as response:
+                prediction_payload = json.load(response)
+            process = prediction_payload.get("assessment", {}).get("process", [])
+            if len(process) != 5:
+                raise RuntimeError("桌面包内 Polymarket 五步研判接口不完整。")
+            logging.info(
+                "Smoke test passed: health=%s polymarket=%s steps=%s",
+                health,
+                prediction_payload.get("source_mode"),
+                len(process),
+            )
             return
 
         import webview

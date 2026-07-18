@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 from .numeric import clamp, finite_float
 from .scoring import (
+    CalibratedDirection,
     DirectionBand,
     calibrate_direction,
     clip_direction,
@@ -590,6 +591,14 @@ LOCAL_EVIDENCE_WEIGHTS = {
     "news": 0.15,
 }
 
+PREDICTION_EVIDENCE_WEIGHTS = {
+    "technical": 0.315,
+    "quant": 0.270,
+    "fundamentals": 0.180,
+    "news": 0.135,
+    "prediction_markets": 0.100,
+}
+
 
 @dataclass(frozen=True)
 class _EvidenceComponentInput:
@@ -617,6 +626,7 @@ def _evidence_component_inputs(
     quant_validation: dict[str, Any],
     fundamentals: dict[str, Any],
     news: dict[str, Any],
+    prediction_markets: dict[str, Any] | None = None,
 ) -> tuple[_EvidenceComponentInput, ...]:
     technical_value = finite_float(technical_score)
     technical_reliability = clamp(
@@ -640,7 +650,7 @@ def _evidence_component_inputs(
     )
     fundamental_available = bool(fundamentals.get("available"))
     news_available = bool(news.get("available"))
-    return (
+    components = (
         _EvidenceComponentInput(
             key="technical",
             label="技术因子",
@@ -688,10 +698,35 @@ def _evidence_component_inputs(
             ),
         ),
     )
+    if prediction_markets is None:
+        return components
+    prediction_available = bool(prediction_markets.get("available"))
+    prediction_mode = str(prediction_markets.get("source_mode") or "unavailable")
+    return components + (
+        _EvidenceComponentInput(
+            key="prediction_markets",
+            label="预测市场",
+            score=finite_float(
+                prediction_markets.get(
+                    "directional_score",
+                    prediction_markets.get("score"),
+                )
+            )
+            or 0.0,
+            reliability=(finite_float(prediction_markets.get("confidence")) or 0.0)
+            / 100,
+            available=prediction_available,
+            detail=(
+                f"{prediction_markets.get('included_market_count', 0)} / "
+                f"{prediction_markets.get('market_count', 0)} 个纳入 · {prediction_mode}"
+            ),
+        ),
+    )
 
 
 def _aggregate_evidence(
     inputs: tuple[_EvidenceComponentInput, ...],
+    weights: dict[str, float],
 ) -> _EvidenceAggregation:
     components: list[dict[str, Any]] = []
     evidence_weights: dict[str, float] = {}
@@ -701,7 +736,7 @@ def _aggregate_evidence(
     confidence_mass = 0.0
     for item in inputs:
         reliability = clamp(item.reliability, 0.0, 1.0)
-        base_weight = LOCAL_EVIDENCE_WEIGHTS[item.key]
+        base_weight = weights[item.key]
         evidence_weight = base_weight * reliability if item.available else 0.0
         denominator += evidence_weight
         numerator += item.score * evidence_weight
@@ -802,6 +837,7 @@ def _local_evidence_summary(
     confidence: int,
     conflicts: list[str],
     missing: list[str],
+    component_count: int,
 ) -> str:
     summary = (
         f"本地研判评分 {score:.1f}/100，方向{_direction_phrase(directional_score)}"
@@ -811,7 +847,81 @@ def _local_evidence_summary(
         return summary + f"；{conflicts[0]}。"
     if missing:
         return summary + f"；{ '、'.join(missing) }缺失，已从权重中剔除。"
-    return summary + "；四类证据均已纳入并按各自可靠度加权。"
+    count_label = {4: "四", 5: "五"}.get(component_count, str(component_count))
+    return summary + f"；{count_label}类证据均已纳入并按各自可靠度加权。"
+
+
+def _evidence_process(
+    aggregation: _EvidenceAggregation,
+    calibrated: CalibratedDirection,
+) -> list[dict[str, Any]]:
+    available = [item for item in aggregation.components if item["available"]]
+    missing = [item["label"] for item in aggregation.components if not item["available"]]
+    contributions = []
+    for component in aggregation.components:
+        effective_weight = float(component["effective_weight"])
+        directional_score = component["directional_score"]
+        contribution = (
+            float(directional_score) * effective_weight
+            if component["available"] and directional_score is not None
+            else 0.0
+        )
+        component["weighted_contribution"] = round(contribution, 2)
+        if component["available"]:
+            contributions.append(
+                f"{component['label']} {float(directional_score):+.1f}×"
+                f"{effective_weight:.1%}={contribution:+.2f}"
+            )
+    effective_weights = "；".join(
+        f"{item['label']} {float(item['effective_weight']):.1%}" for item in available
+    ) or "无可用证据"
+    return [
+        {
+            "step": 1,
+            "title": "证据可用性",
+            "formula": "只纳入通过各自质量门槛的证据；缺失项不以中性值填充",
+            "result": (
+                f"纳入 {len(available)} / {len(aggregation.components)} 类"
+                + (f"；缺失：{'、'.join(missing)}" if missing else "；无缺失项")
+            ),
+        },
+        {
+            "step": 2,
+            "title": "可靠度调权",
+            "formula": "证据权重 = 基础权重 × 该证据可靠度；随后对可用项重新归一化",
+            "result": effective_weights,
+        },
+        {
+            "step": 3,
+            "title": "方向贡献",
+            "formula": "原始方向 = Σ(证据方向 × 归一化有效权重)",
+            "result": (
+                "；".join(contributions)
+                + f"；合计 {aggregation.raw_directional_score:+.2f}"
+                if contributions
+                else "无可计算贡献，原始方向为 +0.00"
+            ),
+        },
+        {
+            "step": 4,
+            "title": "冲突惩罚",
+            "formula": "总体可靠度 = 置信质量总量 × (65% + 35% × 跨证据一致度)",
+            "result": (
+                f"覆盖率 {aggregation.coverage:.0%}；一致度 {aggregation.agreement:.0%}；"
+                f"总体可靠度 {aggregation.overall_reliability:.0%}"
+            ),
+        },
+        {
+            "step": 5,
+            "title": "向中性校准",
+            "formula": "校准方向 = 原始方向 × [35% + 65% × 总体可靠度]；评级 = 50 + 方向/2",
+            "result": (
+                f"校准系数 {calibrated.calibration_factor:.3f}；"
+                f"最终方向 {calibrated.directional_score:+.2f}；"
+                f"最终评级 {direction_to_rating(calibrated.directional_score):.2f}/100"
+            ),
+        },
+    ]
 
 
 def build_local_evidence(
@@ -821,15 +931,22 @@ def build_local_evidence(
     quant_validation: dict[str, Any],
     fundamentals: dict[str, Any],
     news: dict[str, Any],
+    prediction_markets: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    weights = (
+        LOCAL_EVIDENCE_WEIGHTS
+        if prediction_markets is None
+        else PREDICTION_EVIDENCE_WEIGHTS
+    )
     inputs = _evidence_component_inputs(
         technical_score=technical_score,
         technical_confidence=technical_confidence,
         quant_validation=quant_validation,
         fundamentals=fundamentals,
         news=news,
+        prediction_markets=prediction_markets,
     )
-    aggregation = _aggregate_evidence(inputs)
+    aggregation = _aggregate_evidence(inputs, weights)
     calibrated = calibrate_direction(
         aggregation.raw_directional_score,
         aggregation.overall_reliability,
@@ -851,6 +968,12 @@ def build_local_evidence(
         confidence=confidence,
         conflicts=conflicts,
         missing=missing,
+        component_count=len(inputs),
+    )
+    process = (
+        _evidence_process(aggregation, calibrated)
+        if prediction_markets is not None
+        else []
     )
     return {
         "score": round(score, 2),
@@ -866,8 +989,9 @@ def build_local_evidence(
         "conflicts": conflicts,
         "missing_components": missing,
         "summary": summary,
+        "process": process,
         "method": {
-            "weights": dict(LOCAL_EVIDENCE_WEIGHTS),
+            "weights": dict(weights),
             "score_scale": "0-100 rating; 50 is neutral",
             "direction_scale": "-100 bearish to +100 bullish",
             "missing_policy": "exclude and renormalize",

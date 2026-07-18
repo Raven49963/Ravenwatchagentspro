@@ -341,6 +341,53 @@ class NewsAndCompositeEvidenceTests(unittest.TestCase):
         self.assertLess(result["score"], 90)
         self.assertLess(result["confidence"], 10)
 
+    def test_prediction_market_is_a_low_weight_auditable_fifth_component(self) -> None:
+        fundamentals, news = self._component_payloads(30, confidence=80)
+        result = build_local_evidence(
+            technical_score=40,
+            technical_confidence=80,
+            quant_validation={
+                "available": True,
+                "latest_score": 0.2,
+                "robustness_score": 80,
+                "folds": [{}, {}, {}],
+                "verdict": "较稳健",
+            },
+            fundamentals=fundamentals,
+            news=news,
+            prediction_markets={
+                "available": True,
+                "directional_score": 10,
+                "confidence": 60,
+                "included_market_count": 2,
+                "market_count": 4,
+                "source_mode": "cache-offline",
+            },
+        )
+
+        self.assertEqual(len(result["components"]), 5)
+        prediction = result["components"][-1]
+        self.assertEqual(prediction["key"], "prediction_markets")
+        self.assertEqual(prediction["base_weight"], 0.1)
+        self.assertEqual(result["method"]["weights"]["prediction_markets"], 0.1)
+        self.assertAlmostEqual(
+            sum(
+                item["effective_weight"]
+                for item in result["components"]
+                if item["available"]
+            ),
+            1.0,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            sum(item["weighted_contribution"] for item in result["components"]),
+            result["raw_directional_score"],
+            places=1,
+        )
+        self.assertEqual(len(result["process"]), 5)
+        self.assertIn("方向贡献", result["process"][2]["title"])
+        self.assertIn("五类证据", result["summary"])
+
     def test_quant_request_converts_bps_and_position_limit(self) -> None:
         config = QuantValidationRequest(
             commission_bps=4.5,

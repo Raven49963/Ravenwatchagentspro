@@ -1048,11 +1048,122 @@
     renderFundamentalProviders(snapshot || {});
   }
 
+  function predictionSourceLabel(mode, stale) {
+    const labels = {
+      live: "在线快照",
+      "cache-fresh": "本地新鲜缓存",
+      "cache-stale": "断网回退缓存",
+      "cache-offline": "纯离线缓存",
+      "offline-empty": "离线无缓存",
+      unavailable: "在线源不可用",
+    };
+    return `${labels[mode] || mode || "状态未知"}${stale ? " · 已降权" : ""}`;
+  }
+
+  function renderPredictionMarkets(snapshot, assessment) {
+    const sourceMode = assessment?.source_mode || snapshot?.source_mode || "unavailable";
+    const includedCount = safeNumber(assessment?.included_market_count);
+    const marketCount = safeNumber(assessment?.market_count);
+    const confidence = safeNumber(assessment?.confidence);
+    byId("prediction-market-meta").textContent = `${predictionSourceLabel(sourceMode, assessment?.stale)} · ${includedCount}/${marketCount} 纳入 · 可信 ${confidence.toFixed(0)}%`;
+    byId("prediction-market-summary").textContent = assessment?.summary
+      || "没有取得满足质量与方向语义门槛的预测市场，本项不参与综合评分。";
+
+    const container = byId("prediction-market-list");
+    container.replaceChildren();
+    const markets = assessment?.markets || [];
+    markets.forEach((market) => {
+      const row = document.createElement("article");
+      row.className = `prediction-market-row ${market.included ? "is-included" : "is-excluded"}`;
+      const copy = document.createElement("div");
+      copy.className = "prediction-market-copy";
+      const titleLine = document.createElement("div");
+      titleLine.className = "prediction-market-title-line";
+      const status = document.createElement("span");
+      status.className = "prediction-market-status";
+      status.textContent = market.included ? "纳入" : "仅展示";
+      const safeUrl = safeExternalUrl(market.url);
+      const title = document.createElement(safeUrl ? "a" : "span");
+      title.className = safeUrl ? "prediction-market-link" : "prediction-market-title";
+      title.textContent = market.question || market.event_title || "未命名预测市场";
+      if (safeUrl) {
+        title.href = safeUrl;
+        title.target = "_blank";
+        title.rel = "noopener noreferrer";
+      }
+      titleLine.append(status, title);
+      const detail = document.createElement("span");
+      detail.className = "prediction-market-detail";
+      const relevance = market.relevance_kind === "direct" ? "标的直接关联" : "市场宏观关联";
+      detail.textContent = `${relevance} · ${market.impact_label || "方向未判定"} · ${market.probability_source || "概率源未知"} · 流动性 ${safeNumber(market.liquidity).toLocaleString("zh-CN", { maximumFractionDigits: 0 })}`;
+      copy.append(titleLine, detail);
+
+      const metric = document.createElement("div");
+      metric.className = "prediction-market-metric";
+      const probability = document.createElement("strong");
+      probability.textContent = formatPercent(market.yes_probability, 1);
+      const direction = safeNumber(market.directional_score);
+      if (market.included && direction >= 8) probability.className = "is-positive";
+      if (market.included && direction <= -8) probability.className = "is-negative";
+      const quality = document.createElement("span");
+      quality.textContent = `${formatDirection(direction, 1)} · Q${safeNumber(market.quality_score).toFixed(0)}`;
+      metric.append(probability, quality);
+      row.title = [market.explanation, market.exclusion_reason].filter(Boolean).join("\n");
+      row.append(copy, metric);
+      container.append(row);
+    });
+    if (!markets.length) {
+      const empty = document.createElement("div");
+      empty.className = "prediction-empty";
+      empty.textContent = "尚无可展示的 Polymarket 市场。断网时软件会读取本地快照；没有缓存则保持未知，不填充虚构概率。";
+      empty.title = (assessment?.warnings || snapshot?.warnings || []).join("；");
+      container.append(empty);
+    }
+  }
+
+  function renderDeliberationProcess(process) {
+    const container = byId("deliberation-process-list");
+    container.replaceChildren();
+    (process || []).forEach((step, index) => {
+      const item = document.createElement("li");
+      const number = document.createElement("span");
+      number.className = "deliberation-step-number";
+      number.textContent = String(step.step || index + 1).padStart(2, "0");
+      const copy = document.createElement("div");
+      copy.className = "deliberation-step-copy";
+      const title = document.createElement("strong");
+      title.textContent = step.title || `步骤 ${index + 1}`;
+      const result = document.createElement("span");
+      result.textContent = step.result || "--";
+      const formula = document.createElement("small");
+      formula.textContent = step.formula || "";
+      copy.append(title, result, formula);
+      item.append(number, copy);
+      container.append(item);
+    });
+    if (!container.childElementCount) {
+      const item = document.createElement("li");
+      const number = document.createElement("span");
+      number.className = "deliberation-step-number";
+      number.textContent = "--";
+      const copy = document.createElement("div");
+      copy.className = "deliberation-step-copy";
+      const title = document.createElement("strong");
+      title.textContent = "等待证据";
+      const result = document.createElement("span");
+      result.textContent = "取得数据后将显示逐项权重、方向贡献、冲突惩罚与中性校准。";
+      copy.append(title, result);
+      item.append(number, copy);
+      container.append(item);
+    }
+  }
+
   function renderEvidence(payload) {
     state.evidenceData = payload;
     const local = payload.local_evidence || {};
     const fundamentals = payload.fundamental_assessment || {};
     const news = payload.news_assessment || {};
+    const prediction = payload.prediction_market_assessment || payload.prediction_markets?.assessment || {};
     const score = safeNumber(local.score, NaN);
     const direction = safeNumber(local.directional_score, Number.isFinite(score) ? (score - 50) * 2 : 0);
     const scoreElement = byId("evidence-score");
@@ -1069,7 +1180,7 @@
     byId("evidence-summary").textContent = local.summary || "本地证据暂不可用。";
     const fundamentalProviders = payload.fundamentals?.providers || [];
     const providerCount = fundamentalProviders.filter((provider) => provider.status === "ok").length;
-    byId("evidence-meta").textContent = `${fundamentals.data_quality_label || `${providerCount} 个基本面源`} · ${safeNumber(fundamentals.verified_metric_count)} 项跨源 · ${safeNumber(news.five_source_verified_count)} 条五源事件`;
+    byId("evidence-meta").textContent = `${fundamentals.data_quality_label || `${providerCount} 个基本面源`} · ${safeNumber(fundamentals.verified_metric_count)} 项跨源 · ${safeNumber(news.five_source_verified_count)} 条五源事件 · ${safeNumber(prediction.included_market_count)} 个预测市场`;
 
     const componentList = byId("evidence-component-list");
     componentList.replaceChildren();
@@ -1115,6 +1226,8 @@
     byId("news-top-risk").textContent = risk?.title || "暂无显著负面事件";
     byId("news-top-risk").title = risk?.title || "";
     renderFundamentals(payload.fundamentals || {}, fundamentals);
+    renderPredictionMarkets(payload.prediction_markets || {}, prediction);
+    renderDeliberationProcess(local.process || []);
   }
 
   function setEvidenceLoading(loading, reset = false) {
@@ -1128,6 +1241,10 @@
     provider.className = "fundamental-provider is-loading";
     provider.append(document.createElement("b"), document.createTextNode("正在连接基本面数据源"));
     sources.append(provider);
+    byId("prediction-market-meta").textContent = "正在获取市场快照";
+    byId("prediction-market-summary").textContent = "正在检索与标的及市场环境相关的预测市场。";
+    byId("prediction-market-list").replaceChildren();
+    renderDeliberationProcess([]);
   }
 
   function renderEvidenceError(message) {
@@ -1141,6 +1258,11 @@
     byId("evidence-summary").textContent = message;
     byId("evidence-component-list").replaceChildren();
     renderFundamentals({ warnings: [message] }, { metrics: [], available: false });
+    renderPredictionMarkets(
+      { source_mode: "unavailable", warnings: [message] },
+      { source_mode: "unavailable", warnings: [message], markets: [], summary: message },
+    );
+    renderDeliberationProcess([]);
   }
 
   function formatNewsTime(value) {
@@ -2349,7 +2471,7 @@
       ["置信度", `${safeNumber(decision.confidence)}%`],
       ["目标仓位", formatPercent(decision.target_allocation, 0)],
       ["模型", modelLabel],
-      ["证据", `${safeNumber(evidence.news_items)} 条新闻 / ${safeNumber(evidence.fundamental_fields)} 项基本面`],
+      ["证据", `${safeNumber(evidence.news_items)} 条新闻 / ${safeNumber(evidence.fundamental_fields)} 项基本面 / ${safeNumber(evidence.prediction_markets)} 个预测市场`],
       ["调用", payload.mode === "online" ? `${safeNumber(usage.requests)} 次 / ${safeNumber(usage.total_tokens)} Token` : "本地"],
       ["提示", `${(payload.warnings || []).length} 条`],
     ]);

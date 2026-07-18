@@ -67,6 +67,7 @@ from quant_starter.local_evidence import (
     build_local_evidence,
 )
 from quant_starter.news import fetch_online_news
+from quant_starter.polymarket import assess_polymarket, fetch_polymarket_snapshot
 from quant_starter.global_market import search_msn_instruments
 from quant_starter.instrument_catalog import catalog_service
 from quant_starter.realtime import (
@@ -708,6 +709,49 @@ class MarketService:
         )
         return snapshot.to_dict()
 
+    def get_prediction_markets(
+        self,
+        market: str,
+        symbol: str,
+        *,
+        limit: int = 8,
+        force: bool = False,
+        offline: bool = False,
+    ) -> dict[str, Any]:
+        if force:
+            key = (
+                "prediction-markets-force",
+                market,
+                symbol,
+                limit,
+                offline,
+                time.monotonic_ns(),
+            )
+        else:
+            key = ("prediction-markets", market, symbol, limit, offline)
+        company_name = display_for_symbol(market, symbol).split(" · ")[0]
+
+        def load() -> dict[str, Any]:
+            snapshot = fetch_polymarket_snapshot(
+                market,
+                symbol,
+                company_name=company_name,
+                limit=limit,
+                timeout_seconds=10,
+                force=force,
+                offline=offline,
+            )
+            payload = snapshot.to_dict()
+            payload["assessment"] = assess_polymarket(snapshot)
+            return payload
+
+        return self.cache.get_or_load(
+            key,
+            load,
+            ttl_seconds=120,
+            stale_seconds=1_800,
+        )
+
     def dashboard_payload(
         self,
         market: str,
@@ -784,7 +828,7 @@ class MarketService:
         limit: int = 12,
         force: bool = False,
     ) -> dict[str, Any]:
-        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="evidence") as pool:
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="evidence") as pool:
             bars_future = pool.submit(self.get_bars, market, symbol, period, adjust)
             fundamentals_future = pool.submit(
                 self.get_fundamentals,
@@ -799,20 +843,30 @@ class MarketService:
                 limit=limit,
                 force=force,
             )
+            prediction_future = pool.submit(
+                self.get_prediction_markets,
+                market,
+                symbol,
+                limit=min(12, limit),
+                force=force,
+            )
             bars = bars_future.result()
             fundamentals_snapshot = fundamentals_future.result()
             news_feed = news_future.result()
+            prediction_markets = prediction_future.result()
 
         analysis = analyze_composite(bars).to_dict()
         quant_validation = _walk_forward_payload(bars, config)
         fundamental_assessment = assess_fundamentals(fundamentals_snapshot)
         news_assessment = assess_news(news_feed)
+        prediction_assessment = prediction_markets["assessment"]
         local_evidence = build_local_evidence(
             technical_score=analysis.get("directional_score", analysis.get("score")),
             technical_confidence=analysis.get("confidence"),
             quant_validation=quant_validation,
             fundamentals=fundamental_assessment,
             news=news_assessment,
+            prediction_markets=prediction_assessment,
         )
         return {
             "market": market,
@@ -823,6 +877,8 @@ class MarketService:
             "fundamental_assessment": fundamental_assessment,
             "news": news_feed,
             "news_assessment": news_assessment,
+            "prediction_markets": prediction_markets,
+            "prediction_market_assessment": prediction_assessment,
             "local_evidence": local_evidence,
             "quant_validation": quant_validation,
             "refreshed_at": _utc_now_iso(),
@@ -862,6 +918,7 @@ class MarketService:
         )
         fundamentals: dict[str, Any] = {}
         news: list[dict[str, Any]] = []
+        prediction_markets: dict[str, Any] = {}
         warnings: list[str] = []
         if options.fetch_details:
             fundamentals, news, evidence_warnings = fetch_research_evidence(
@@ -907,6 +964,20 @@ class MarketService:
                 warnings.extend(online_feed.get("warnings", []))
             except Exception as exc:
                 warnings.append("在线新闻聚合暂不可用：" + summarize_error(exc))
+            try:
+                prediction_payload = self.get_prediction_markets(
+                    market,
+                    symbol,
+                    limit=8,
+                )
+                prediction_markets = dict(
+                    prediction_payload.get("assessment") or {}
+                )
+                warnings.extend(prediction_markets.get("warnings") or [])
+            except Exception as exc:
+                warnings.append(
+                    "预测市场证据暂不可用：" + summarize_error(exc)
+                )
             check_cancelled()
         else:
             warnings.append("本次快速研判未启用基本面和新闻补充。")
@@ -918,6 +989,7 @@ class MarketService:
             technical=technical,
             fundamentals=fundamentals,
             news=news,
+            prediction_markets=prediction_markets,
             warnings=warnings,
         )
         workflow = RavenWatchAgentsWorkflow(workflow_config, llm_client)
@@ -947,11 +1019,15 @@ class MarketService:
                     for item in result.agent_runs
                 ),
             },
+            "prediction_markets": summary["prediction_markets"],
             "evidence": {
                 "fundamental_fields": sum(
                     not str(key).startswith("_") for key in fundamentals
                 ),
                 "news_items": len(news),
+                "prediction_markets": int(
+                    prediction_markets.get("included_market_count") or 0
+                ),
             },
             "warnings": result.warnings,
             "started_at": result.started_at,
@@ -1072,10 +1148,20 @@ class EvidenceRequest(QuantValidationRequest):
     force: bool = False
 
 
+class PredictionMarketRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    market: str = Field(default="nasdaq", pattern=r"^[A-Za-z-]+$")
+    symbol: str = Field(default="NVDA", min_length=1, max_length=32)
+    limit: int = Field(default=8, ge=1, le=20)
+    force: bool = False
+    offline: bool = False
+
+
 app = FastAPI(
     title="Raven Watch Agents Pro API",
-    version="1.9.0",
-    description="四市场实时行情、参数化样本外验证、新闻基本面与 DeepSeek V4 多智能体在线研判服务。",
+    version="1.10.0",
+    description="四市场实时行情、预测市场证据、参数化样本外验证、新闻基本面与 DeepSeek V4 多智能体在线研判服务。",
 )
 
 
@@ -1123,6 +1209,9 @@ def health() -> dict[str, Any]:
         "configurable_quant": True,
         "local_evidence_scoring": True,
         "online_fundamentals": True,
+        "polymarket_evidence": True,
+        "offline_evidence_cache": True,
+        "auditable_deliberation_process": True,
         "deepseek_v4_online": True,
         "factor_count": len(FACTOR_WEIGHTS),
     }
@@ -1380,6 +1469,42 @@ async def configured_quant_walk_forward(
         )
     except (RuntimeError, OSError) as exc:
         raise HTTPException(status_code=502, detail=summarize_error(exc)) from exc
+
+
+@app.get("/api/polymarket")
+async def polymarket_evidence(
+    market: str = Query("nasdaq"),
+    symbol: str = Query("NVDA", min_length=1, max_length=32),
+    limit: int = Query(8, ge=1, le=20),
+    force: bool = Query(False),
+    offline: bool = Query(False),
+) -> dict[str, Any]:
+    normalized_market = _normalize_market(market)
+    normalized_symbol = _normalize_symbol(normalized_market, symbol)
+    return await asyncio.to_thread(
+        service.get_prediction_markets,
+        normalized_market,
+        normalized_symbol,
+        limit=limit,
+        force=force,
+        offline=offline,
+    )
+
+
+@app.post("/api/polymarket")
+async def configured_polymarket_evidence(
+    request: PredictionMarketRequest,
+) -> dict[str, Any]:
+    normalized_market = _normalize_market(request.market)
+    normalized_symbol = _normalize_symbol(normalized_market, request.symbol)
+    return await asyncio.to_thread(
+        service.get_prediction_markets,
+        normalized_market,
+        normalized_symbol,
+        limit=request.limit,
+        force=request.force,
+        offline=request.offline,
+    )
 
 
 @app.get("/api/evidence")

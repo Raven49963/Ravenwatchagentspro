@@ -27,6 +27,7 @@ from quant_starter.data import (
 )
 from quant_starter.global_market import fetch_msn_quote, resolve_msn_instrument
 from quant_starter.news import SEC_USER_AGENT, _read_bytes, _sec_company_map
+from quant_starter.polymarket import assess_polymarket, fetch_polymarket_snapshot
 
 
 @dataclass
@@ -38,6 +39,7 @@ class ResearchContext:
     technical: dict[str, float | str | None]
     fundamentals: dict[str, Any] = field(default_factory=dict)
     news: list[dict[str, Any]] = field(default_factory=list)
+    prediction_markets: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
     def prompt_payload(self) -> dict[str, Any]:
@@ -48,6 +50,7 @@ class ResearchContext:
             "technical_snapshot": self.technical,
             "fundamentals": self.fundamentals,
             "news": self.news[:12],
+            "prediction_markets": self.prediction_markets,
             "data_warnings": self.warnings,
         }
 
@@ -1220,6 +1223,40 @@ def build_research_context(
     technical["data_provider"] = provider
     technical["data_provider_label"] = provider_display_name(provider)
 
+    prediction_markets: dict[str, Any] = {}
+    if fetch_details and normalized_source in {"a-share", "nasdaq", "hk", "global"}:
+        company_name = next(
+            (
+                str(fundamentals.get(key) or "").strip()
+                for key in (
+                    "longName",
+                    "shortName",
+                    "companyName",
+                    "company",
+                    "orgName",
+                    "name",
+                )
+                if str(fundamentals.get(key) or "").strip()
+            ),
+            "",
+        )
+        try:
+            snapshot = _run_with_timeout(
+                lambda: fetch_polymarket_snapshot(
+                    normalized_source,
+                    normalized_symbol,
+                    company_name=company_name,
+                    timeout_seconds=10,
+                ),
+                12,
+            )
+            prediction_markets = assess_polymarket(snapshot)
+            warnings.extend(snapshot.warnings)
+        except Exception as exc:
+            warnings.append(
+                "预测市场证据暂不可用：" + summarize_error(exc, 220)
+            )
+
     return ResearchContext(
         symbol=normalized_symbol,
         market=normalized_source,
@@ -1228,5 +1265,6 @@ def build_research_context(
         technical=technical,
         fundamentals=fundamentals,
         news=news,
+        prediction_markets=prediction_markets,
         warnings=warnings,
     )

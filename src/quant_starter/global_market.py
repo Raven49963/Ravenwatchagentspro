@@ -31,7 +31,7 @@ MSN_PUBLIC_API_KEY = os.getenv(
 )
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 Chrome/126.0 Safari/537.36 RavenWatchAgentsPro/1.9"
+    "AppleWebKit/537.36 Chrome/126.0 Safari/537.36 RavenWatchAgentsPro/1.10"
 )
 
 SECURITY_TYPES = {

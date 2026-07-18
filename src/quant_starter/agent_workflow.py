@@ -79,6 +79,7 @@ class ResearchResult:
             "decision": asdict(self.decision),
             "technical_snapshot": self.context.technical,
             "fundamentals": self.context.fundamentals,
+            "prediction_markets": self.context.prediction_markets,
             "warnings": self.warnings,
             "report_order": list(self.reports),
             "agent_runs": [asdict(item) for item in self.agent_runs],
@@ -407,8 +408,8 @@ class RavenWatchAgentsWorkflow:
 
         role_focus = {
             "market": "只依据价格、均线、RSI、MACD、波动率、回撤和成交量评估趋势与关键风险。",
-            "sentiment": "依据新闻标题和来源核验度评估短期情绪；单源消息必须降权，没有数据时明确说不知道。",
-            "news": "评估公司新闻、公告、行业事件与宏观冲击；五源验证和官方原文可作为强证据，低于五源必须标注待核，不得编造事件。",
+            "sentiment": "依据新闻标题、来源核验度与已校准的 Polymarket 证据评估短期情绪；预测市场是参与者定价而非事实，单源消息必须降权，没有数据时明确说不知道。",
+            "news": "评估公司新闻、公告、行业事件、宏观冲击与预测市场分歧；五源验证和官方原文可作为强证据，Polymarket 只能作为低权重预期证据，低于五源必须标注待核，不得编造事件。",
             "fundamentals": "评估估值、盈利质量、现金流、增长和杠杆；优先使用字段来源、跨源一致度和报告期质量，缺失或冲突字段不得猜测。",
         }[analyst_id]
         return self._online_report(
@@ -634,12 +635,37 @@ class RavenWatchAgentsWorkflow:
                 if item.get("title")
             ]
             sentiment = self._headline_sentiment(headlines)
+            prediction = context.prediction_markets
+            prediction_rows = [
+                (
+                    f"{'[纳入]' if item.get('included') else '[仅展示]'} "
+                    f"{item.get('question', '未命名市场')}："
+                    f"Yes {float(item.get('yes_probability') or 0):.1%}，"
+                    f"方向 {float(item.get('directional_score') or 0):+.1f}，"
+                    f"质量 {float(item.get('quality_score') or 0):.0f}/100"
+                )
+                for item in prediction.get("markets", [])[:8]
+            ]
+            prediction_process = [
+                f"{item.get('step', index + 1)}. {item.get('title', '')}：{item.get('result', '')}"
+                for index, item in enumerate(prediction.get("process", []))
+            ]
             title = "市场情绪" if analyst_id == "sentiment" else "新闻与事件"
             return self._markdown_report(
                 title,
                 [
                     ("已获取标题", headlines or ["没有取得可核验新闻。"]),
                     ("规则情绪计分", [f"关键词净分 {sentiment:+d}；只代表标题层面的粗略信号。"]),
+                    (
+                        "预测市场证据",
+                        prediction_rows
+                        or ["没有可定向的预测市场证据；该项未参与评分。"],
+                    ),
+                    (
+                        "预测市场校准过程",
+                        prediction_process
+                        or ["没有可计算过程；保持未知而非填充中性观点。"],
+                    ),
                     ("数据边界", context.warnings or ["标题不等于完整事实，需要回看原始来源。"]),
                 ],
             )
@@ -742,7 +768,55 @@ class RavenWatchAgentsWorkflow:
             [item.get("title", "") for item in context.news]
         )
         score += max(-0.3, min(0.3, sentiment * 0.08))
+        prediction_score, prediction_positive, prediction_negative = (
+            self._prediction_market_evidence(context.prediction_markets)
+        )
+        score += prediction_score
+        positives.extend(prediction_positive)
+        negatives.extend(prediction_negative)
         return max(-3.0, min(3.0, score)), positives, negatives
+
+    @staticmethod
+    def _prediction_market_evidence(
+        prediction_markets: dict,
+    ) -> tuple[float, list[str], list[str]]:
+        if not prediction_markets.get("available"):
+            return 0.0, [], []
+        try:
+            direction = max(
+                -100.0,
+                min(100.0, float(prediction_markets.get("directional_score") or 0)),
+            )
+            confidence = max(
+                0.0,
+                min(1.0, float(prediction_markets.get("confidence") or 0) / 100),
+            )
+        except (TypeError, ValueError):
+            return 0.0, [], []
+        contribution = direction / 100 * confidence * 0.35
+        details = [
+            str(prediction_markets.get("summary") or "预测市场形成了可定向证据。")
+        ]
+        included = [
+            item
+            for item in prediction_markets.get("markets", [])
+            if isinstance(item, dict) and item.get("included")
+        ]
+        included.sort(
+            key=lambda item: abs(float(item.get("contribution") or 0)),
+            reverse=True,
+        )
+        for item in included[:2]:
+            details.append(
+                f"Polymarket：{item.get('question', '未命名市场')}，"
+                f"Yes {float(item.get('yes_probability') or 0):.1%}，"
+                f"质量 {float(item.get('quality_score') or 0):.0f}/100。"
+            )
+        if contribution > 0.01:
+            return contribution, details, []
+        if contribution < -0.01:
+            return contribution, [], details
+        return contribution, [], []
 
     @staticmethod
     def _fundamental_evidence(

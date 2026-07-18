@@ -11,12 +11,12 @@
 API 与工作流编排（web_app.py、agent_workflow.py）
           |
           v
-领域分析（factors.py、local_evidence.py、walk_forward.py）
+领域分析（factors.py、local_evidence.py、polymarket.py、walk_forward.py）
           |
           v
 共享契约（scoring.py、numeric.py）
 
-数据提供器（data.py、global_market.py、news.py、research_data.py）
+数据提供器（data.py、global_market.py、news.py、research_data.py、polymarket.py）
           |
           v
 标准化行情、新闻和基本面数据
@@ -27,6 +27,7 @@ API 与工作流编排（web_app.py、agent_workflow.py）
 - 领域模块组合因子与证据，返回稳定的数据类或字典契约。
 - `scoring.py` 是方向、评级、阈值和可靠度校准的唯一实现。
 - `numeric.py` 只提供无业务文案的安全数值操作。
+- `polymarket.py` 同时承担官方 Gamma 响应标准化与预测市场领域评估；网络快照与校准结果通过数据类边界分离，智能体只读取校准后的证据。
 
 ## 评分契约
 
@@ -46,10 +47,20 @@ API 与工作流编排（web_app.py、agent_workflow.py）
 3. 新智能体应通过工作流读取领域结果，不直接抓取或重算同一数据。
 4. 公共响应字段的删除、改名或语义变化视为兼容性变更。
 5. 时间、随机种子和外部网络响应应在测试边界外注入或固定。
+6. 预测市场只能作为低权重预期证据；非二元、方向语义不明或质量不足的市场必须保留为“仅展示”，不能强制映射多空。
+
+## 预测市场证据链
+
+1. `fetch_polymarket_snapshot` 按标的别名和市场宏观主题调用官方 Gamma 搜索接口，解析二元市场、概率、价差、成交量、流动性与结算来源。
+2. `assess_polymarket` 计算关联度、方向语义、市场质量、一致度、广度和快照新鲜度，并向中性校准；每个市场保留是否纳入、排除原因、有效权重和方向贡献。
+3. `build_local_evidence` 在传入预测市场时使用五类权重，其中预测市场为 `10%`；旧调用仍保持原四类评分合同。
+4. `ResearchContext` 将同一份校准结果交给离线规则与在线 LLM，禁止智能体自行抓取或重新解释未经筛选的市场概率。
+5. `%LOCALAPPDATA%\RavenWatchAgentsPro\polymarket` 保存原子快照；在线失败可回退陈旧缓存，`offline=true` 只读缓存，无缓存时保持不可用。
 
 ## 回归保护
 
 - `tests/test_scoring.py` 验证共享数值、阈值和校准规则。
 - `tests/test_scoring_contract.py` 精确锁定复合分析与本地证据的公开结果。
+- `tests/test_polymarket.py` 验证官方响应解析、保守语义映射、质量校准、缓存往返、断网回退和纯离线行为。
 - 完整测试覆盖数据源、因子、样本外验证、GUI、API 和模型客户端。
 - 发布前还需执行桌面窗口冒烟测试，并用当前源码重新构建 EXE。

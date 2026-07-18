@@ -49,7 +49,7 @@
       </div>
       <strong>A股 · 美股 · 港股 · 全球 ETF</strong>
       <span id="sidebar-provider">等待数据源</span>
-      <small>v1.9 DeepSeek V4</small>
+      <small>v1.10 Polymarket</small>
     </div>
   </aside>
 
@@ -278,7 +278,7 @@
               <span>可信度 <strong id="evidence-confidence">--</strong></span>
               <span>覆盖率 <strong id="evidence-coverage">--</strong></span>
             </div>
-            <p id="evidence-summary">正在汇总技术、样本外、基本面与新闻证据。</p>
+            <p id="evidence-summary">正在汇总技术、样本外、基本面、新闻与预测市场证据。</p>
           </div>
           <div class="evidence-components">
             <div class="evidence-subheading"><strong>证据构成</strong><span>可靠度加权</span></div>
@@ -293,6 +293,23 @@
             </div>
             <div id="fundamental-metrics" class="fundamental-metrics" aria-live="polite"></div>
           </div>
+        </div>
+        <div class="prediction-evidence-band">
+          <section class="prediction-market-section" aria-labelledby="prediction-market-heading">
+            <div class="evidence-subheading">
+              <strong id="prediction-market-heading">Polymarket 预期证据</strong>
+              <span id="prediction-market-meta">等待市场快照</span>
+            </div>
+            <p id="prediction-market-summary" class="prediction-market-summary">正在检索与标的及市场环境相关的预测市场。</p>
+            <div id="prediction-market-list" class="prediction-market-list" aria-live="polite"></div>
+          </section>
+          <section class="deliberation-section" aria-labelledby="deliberation-heading">
+            <div class="evidence-subheading">
+              <strong id="deliberation-heading">离线综合研判过程</strong>
+              <span>可复核计算链</span>
+            </div>
+            <ol id="deliberation-process-list" class="deliberation-process-list" aria-live="polite"></ol>
+          </section>
         </div>
         <div class="evidence-event-band">
           <div><span>正面事件</span><strong id="news-positive-count">--</strong></div>
