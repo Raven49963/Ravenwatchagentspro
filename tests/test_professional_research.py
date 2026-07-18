@@ -11,7 +11,9 @@ import threading
 import time
 import unittest
 from unittest import mock
+import warnings
 
+import numpy as np
 import pandas as pd
 
 
@@ -98,6 +100,17 @@ class FactorResearchTests(unittest.TestCase):
         result = analyze_composite(self.bars)
         self.assertEqual(len(result.strategies), 5)
         self.assertAlmostEqual(sum(item.weight for item in result.strategies), 1.0)
+        self.assertGreaterEqual(result.score, 0)
+        self.assertLessEqual(result.score, 100)
+        self.assertAlmostEqual(result.score, 50 + result.directional_score / 2, places=2)
+        self.assertLessEqual(
+            abs(result.directional_score), abs(result.raw_directional_score) + 0.01
+        )
+        self.assertAlmostEqual(result.signal_strength, abs(result.directional_score))
+        self.assertGreaterEqual(result.agreement, 0)
+        self.assertLessEqual(result.agreement, 1)
+        self.assertGreaterEqual(result.factor_coverage, 0)
+        self.assertLessEqual(result.factor_coverage, 1)
         self.assertIn(result.action, {"BUY", "HOLD", "SELL"})
         self.assertGreaterEqual(result.target_position, 0)
         self.assertLessEqual(result.target_position, 1)
@@ -110,6 +123,51 @@ class FactorResearchTests(unittest.TestCase):
             "recovery",
             "range_bound",
         })
+
+    def test_rating_scale_preserves_bullish_and_bearish_direction(self) -> None:
+        dates = pd.bdate_range("2024-01-02", periods=320)
+
+        def trend_bars(start: float, end: float) -> pd.DataFrame:
+            close = np.linspace(start, end, len(dates))
+            return pd.DataFrame(
+                {
+                    "Open": close * 0.998,
+                    "High": close * 1.012,
+                    "Low": close * 0.988,
+                    "Close": close,
+                    "Volume": np.linspace(1_000_000, 1_400_000, len(dates)),
+                },
+                index=dates,
+            )
+
+        bullish = analyze_composite(trend_bars(80, 180))
+        bearish = analyze_composite(trend_bars(180, 80))
+        self.assertGreater(bullish.directional_score, 0)
+        self.assertGreater(bullish.score, 50)
+        self.assertLess(bearish.directional_score, 0)
+        self.assertLess(bearish.score, 50)
+        self.assertGreaterEqual(bearish.score, 0)
+        self.assertNotIn("综合得分 -", bearish.summary)
+
+    def test_constant_series_factor_mining_avoids_invalid_correlation_warning(self) -> None:
+        dates = pd.bdate_range("2024-01-02", periods=320)
+        flat = pd.DataFrame(
+            {
+                "Open": np.full(len(dates), 100.0),
+                "High": np.full(len(dates), 101.0),
+                "Low": np.full(len(dates), 99.0),
+                "Close": np.full(len(dates), 100.0),
+                "Volume": np.full(len(dates), 1_000_000.0),
+            },
+            index=dates,
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = analyze_composite(flat)
+        invalid = [item for item in caught if "invalid value encountered" in str(item.message)]
+        self.assertEqual(invalid, [])
+        self.assertGreaterEqual(result.score, 0)
+        self.assertLessEqual(result.score, 100)
 
     def test_factor_mining_uses_rank_ic_without_scipy(self) -> None:
         results = mine_time_series_factors(self.bars, horizon_days=5)

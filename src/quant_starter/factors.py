@@ -76,6 +76,13 @@ class FactorMiningResult:
 @dataclass(frozen=True)
 class CompositeResearch:
     score: float
+    directional_score: float
+    raw_directional_score: float
+    signal_strength: float
+    agreement: float
+    factor_stability: float
+    factor_coverage: float
+    calibration_factor: float
     action: str
     action_label: str
     confidence: int
@@ -280,6 +287,32 @@ def _clip(value: float, limit: float = 100.0) -> float:
     if not math.isfinite(value):
         return 0.0
     return float(max(-limit, min(limit, value)))
+
+
+def _rating_score(directional_score: float) -> float:
+    """Map a signed market direction to an unambiguous 0-100 rating."""
+    return float(max(0.0, min(100.0, 50.0 + _clip(directional_score) / 2.0)))
+
+
+def _rank_correlation(left: pd.Series, right: pd.Series) -> float:
+    left_rank = left.rank(method="average")
+    right_rank = right.rank(method="average")
+    if left_rank.nunique(dropna=True) < 2 or right_rank.nunique(dropna=True) < 2:
+        return 0.0
+    value = float(left_rank.corr(right_rank))
+    return value if math.isfinite(value) else 0.0
+
+
+def _direction_phrase(score: float) -> str:
+    if score >= 25:
+        return "多头方向较强"
+    if score >= 8:
+        return "略偏多"
+    if score > -8:
+        return "方向中性"
+    if score > -25:
+        return "略偏空"
+    return "空头方向较强"
 
 
 def _latest(series: pd.Series, default: float = 0.0) -> float:
@@ -1073,11 +1106,7 @@ def mine_time_series_factors(
         sample = pd.concat([series.rename("factor"), forward], axis=1).dropna()
         if len(sample) < minimum_observations:
             continue
-        factor_rank = sample["factor"].rank(method="average")
-        forward_rank = sample["forward"].rank(method="average")
-        ic = float(factor_rank.corr(forward_rank))
-        if not math.isfinite(ic):
-            ic = 0.0
+        ic = _rank_correlation(sample["factor"], sample["forward"])
         denominator = max(1e-9, 1 - ic * ic)
         t_statistic = ic * math.sqrt(max(len(sample) - 2, 1) / denominator)
         nonzero = sample[(sample["factor"] != 0) & (sample["forward"] != 0)]
@@ -1094,13 +1123,7 @@ def mine_time_series_factors(
             ]
             if len(fold) < 20:
                 continue
-            fold_ic = float(
-                fold["factor"].rank(method="average").corr(
-                    fold["forward"].rank(method="average")
-                )
-            )
-            if math.isfinite(fold_ic):
-                fold_ics.append(fold_ic)
+            fold_ics.append(_rank_correlation(fold["factor"], fold["forward"]))
         meaningful_signs = [np.sign(value) for value in fold_ics if abs(value) >= 0.01]
         sign_consistency = (
             max(0.0, float(np.mean(meaningful_signs))) if meaningful_signs else 0.0
@@ -1220,14 +1243,15 @@ def analyze_composite(
     regime = detect_market_regime(frame)
     strategies = build_strategy_signals(factors, regime)
     mining = mine_time_series_factors(frame)
-    composite_score = _clip(sum(item.score * item.weight for item in strategies))
-
-    directional = [np.sign(item.score) for item in strategies if abs(item.score) >= 20]
-    if directional:
-        dominant = np.sign(composite_score)
-        agreement = float(sum(direction == dominant for direction in directional) / len(directional))
-    else:
-        agreement = 0.5
+    raw_directional_score = _clip(
+        sum(item.score * item.weight for item in strategies)
+    )
+    gross_direction = sum(abs(item.score) * item.weight for item in strategies)
+    agreement = (
+        min(1.0, abs(raw_directional_score) / gross_direction)
+        if gross_direction > 1e-9
+        else 0.5
+    )
 
     risk_factors = {item.key: item for item in factors}
     volatility = max(
@@ -1257,15 +1281,41 @@ def analyze_composite(
     factor_stability = (
         float(np.median(stability_values)) / 100 if stability_values else 0.35
     )
-    raw_confidence = 42 + abs(composite_score) * 0.35 + agreement * 26 - risk_penalty
-    confidence = int(
-        max(18, min(90, raw_confidence * (0.62 + 0.38 * factor_stability)))
+    factor_stability = max(0.0, min(1.0, factor_stability))
+    total_factor_weight = sum(item.weight for item in factors)
+    factor_coverage = (
+        sum(item.weight for item in factors if item.available) / total_factor_weight
+        if total_factor_weight
+        else 0.0
+    )
+    regime_reliability = max(0.0, min(1.0, regime.confidence / 100))
+    evidence_reliability = (
+        0.35 * agreement
+        + 0.25 * factor_stability
+        + 0.25 * factor_coverage
+        + 0.15 * regime_reliability
+    )
+    calibration_factor = 0.50 + 0.50 * evidence_reliability
+    directional_score = _clip(raw_directional_score * calibration_factor)
+    signal_clarity = min(1.0, abs(raw_directional_score) / 40.0)
+    risk_reliability = max(0.55, 1.0 - min(risk_penalty, 45.0) / 100.0)
+    confidence = round(
+        max(
+            18.0,
+            min(
+                90.0,
+                100
+                * evidence_reliability
+                * (0.68 + 0.32 * signal_clarity)
+                * risk_reliability,
+            ),
+        )
     )
 
-    if composite_score <= 0:
-        base_position = 0.0 if composite_score <= -25 else 0.08
+    if directional_score <= 0:
+        base_position = 0.0 if directional_score <= -25 else 0.08
     else:
-        base_position = min(0.88, 0.12 + composite_score / 100 * 0.82)
+        base_position = min(0.88, 0.12 + directional_score / 100 * 0.82)
     volatility_scale = max(0.25, min(1.0, 0.28 / volatility))
     downside_scale = max(
         0.35,
@@ -1330,16 +1380,26 @@ def analyze_composite(
     else:
         risk_level = "低"
 
-    action = _action(composite_score)
-    label = _action_label(composite_score)
+    action = _action(directional_score)
+    label = _action_label(directional_score)
+    rounded_direction = round(directional_score, 2)
+    rating_score = round(_rating_score(rounded_direction), 2)
     summary = (
-        f"当前处于{regime.name}，多策略综合得分 {composite_score:+.1f}，"
+        f"当前处于{regime.name}，研判评分 {rating_score:.1f}/100"
+        f"（{_direction_phrase(directional_score)}，方向强度 {abs(directional_score):.1f}），"
         f"一致度 {agreement:.0%}，历史分段稳定度 {factor_stability:.0%}；"
         f"建议目标仓位 {target_position:.0%}，"
         f"风险等级{risk_level}。"
     )
     return CompositeResearch(
-        score=round(composite_score, 2),
+        score=rating_score,
+        directional_score=rounded_direction,
+        raw_directional_score=round(raw_directional_score, 2),
+        signal_strength=round(abs(directional_score), 2),
+        agreement=round(agreement, 6),
+        factor_stability=round(factor_stability, 6),
+        factor_coverage=round(factor_coverage, 6),
+        calibration_factor=round(calibration_factor, 6),
         action=action,
         action_label=label,
         confidence=confidence,

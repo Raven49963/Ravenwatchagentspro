@@ -18,6 +18,22 @@ def _clamp(value: float, lower: float = -100.0, upper: float = 100.0) -> float:
     return min(upper, max(lower, value))
 
 
+def _rating_score(directional_score: float) -> float:
+    return _clamp(50.0 + _clamp(directional_score) / 2.0, 0.0, 100.0)
+
+
+def _direction_phrase(score: float) -> str:
+    if score >= 25:
+        return "明显偏多"
+    if score >= 8:
+        return "略偏多"
+    if score > -8:
+        return "中性"
+    if score > -25:
+        return "略偏空"
+    return "明显偏空"
+
+
 def _piecewise(value: float, points: tuple[tuple[float, float], ...]) -> float:
     if value <= points[0][0]:
         return points[0][1]
@@ -368,7 +384,9 @@ def assess_fundamentals(snapshot: dict[str, Any]) -> dict[str, Any]:
     return {
         "available": available_metrics > 0,
         "company": company,
-        "score": score,
+        "score": round(_rating_score(score), 2),
+        "directional_score": score,
+        "rating_score": round(_rating_score(score), 2),
         "label": label,
         "confidence": confidence,
         "coverage": round(coverage, 6),
@@ -542,7 +560,9 @@ def assess_news(feed: dict[str, Any], *, now: datetime | None = None) -> dict[st
     )[:3]
     return {
         "available": bool(articles),
-        "score": score,
+        "score": round(_rating_score(score), 2),
+        "directional_score": score,
+        "rating_score": round(_rating_score(score), 2),
         "label": label,
         "confidence": confidence,
         "article_count": len(articles),
@@ -603,7 +623,7 @@ def build_local_evidence(
             technical_value or 0.0,
             technical_reliability,
             technical_value is not None,
-            "21 项价格、波动与流动性因子",
+            "27 项价格、波动、流动性与尾部风险因子",
         ),
         (
             "quant",
@@ -616,7 +636,10 @@ def build_local_evidence(
         (
             "fundamentals",
             "基本面",
-            _finite(fundamentals.get("score")) or 0.0,
+            _finite(
+                fundamentals.get("directional_score", fundamentals.get("score"))
+            )
+            or 0.0,
             (_finite(fundamentals.get("confidence")) or 0.0) / 100,
             fundamental_available,
             f"{fundamentals.get('available_metrics', 0)} / {fundamentals.get('total_metrics', 0)} 项",
@@ -624,13 +647,14 @@ def build_local_evidence(
         (
             "news",
             "新闻事件",
-            _finite(news.get("score")) or 0.0,
+            _finite(news.get("directional_score", news.get("score"))) or 0.0,
             (_finite(news.get("confidence")) or 0.0) / 100,
             news_available,
             f"{news.get('article_count', 0)} 条 · 官方占比 {(_finite(news.get('official_ratio')) or 0.0):.0%}",
         ),
     )
     components: list[dict[str, Any]] = []
+    evidence_weights: dict[str, float] = {}
     denominator = 0.0
     numerator = 0.0
     coverage = 0.0
@@ -641,6 +665,7 @@ def build_local_evidence(
         evidence_weight = base_weight * reliability if available else 0.0
         denominator += evidence_weight
         numerator += score * evidence_weight
+        evidence_weights[key] = evidence_weight
         if available:
             coverage += base_weight
         confidence_mass += evidence_weight
@@ -649,40 +674,66 @@ def build_local_evidence(
                 "key": key,
                 "label": label,
                 "available": available,
-                "score": round(_clamp(score), 2) if available else None,
+                "score": round(_rating_score(score), 2) if available else None,
+                "directional_score": round(_clamp(score), 2) if available else None,
+                "direction": _direction_phrase(score) if available else "数据不足",
                 "confidence": round(reliability * 100) if available else 0,
                 "base_weight": base_weight,
                 "effective_weight": 0.0,
                 "detail": detail,
             }
         )
-    score = _clamp(numerator / denominator) if denominator else 0.0
+    raw_directional_score = _clamp(numerator / denominator) if denominator else 0.0
     for component in components:
         key = component["key"]
         if component["available"] and denominator:
-            component["effective_weight"] = round(
-                base_weights[key] * component["confidence"] / 100 / denominator,
-                6,
-            )
-    confidence = round(100 * confidence_mass)
-    if score >= 25:
+            component["effective_weight"] = round(evidence_weights[key] / denominator, 6)
+    weighted_deviation = sum(
+        evidence_weights[component["key"]]
+        / denominator
+        * abs(float(component["directional_score"]) - raw_directional_score)
+        for component in components
+        if component["available"] and denominator
+    )
+    agreement = _clamp(1.0 - weighted_deviation / 100.0, 0.0, 1.0)
+    overall_reliability = _clamp(
+        confidence_mass * (0.65 + 0.35 * agreement), 0.0, 1.0
+    )
+    calibration_factor = 0.35 + 0.65 * overall_reliability
+    directional_score = _clamp(raw_directional_score * calibration_factor)
+    score = _rating_score(directional_score)
+    confidence = round(100 * overall_reliability)
+    if directional_score >= 25:
         label = "多头证据占优"
-    elif score >= 8:
+    elif directional_score >= 8:
         label = "证据略偏多"
-    elif score > -8:
+    elif directional_score > -8:
         label = "证据中性"
-    elif score > -25:
+    elif directional_score > -25:
         label = "证据略偏空"
     else:
         label = "空头风险占优"
-    available_scores = [component["score"] for component in components if component["available"]]
+    available_scores = [
+        component["directional_score"]
+        for component in components
+        if component["available"]
+    ]
     conflicts: list[str] = []
     if available_scores and max(available_scores) - min(available_scores) >= 60:
-        high = max((item for item in components if item["available"]), key=lambda item: item["score"])
-        low = min((item for item in components if item["available"]), key=lambda item: item["score"])
+        high = max(
+            (item for item in components if item["available"]),
+            key=lambda item: item["directional_score"],
+        )
+        low = min(
+            (item for item in components if item["available"]),
+            key=lambda item: item["directional_score"],
+        )
         conflicts.append(f"{high['label']}与{low['label']}方向分歧较大")
     missing = [component["label"] for component in components if not component["available"]]
-    summary = f"本地证据得分 {score:.1f}，可信度 {confidence}%"
+    summary = (
+        f"本地研判评分 {score:.1f}/100，方向{_direction_phrase(directional_score)}"
+        f"（强度 {abs(directional_score):.1f}），可信度 {confidence}%"
+    )
     if conflicts:
         summary += f"；{conflicts[0]}。"
     elif missing:
@@ -691,8 +742,13 @@ def build_local_evidence(
         summary += "；四类证据均已纳入并按各自可靠度加权。"
     return {
         "score": round(score, 2),
+        "directional_score": round(directional_score, 2),
+        "raw_directional_score": round(raw_directional_score, 2),
+        "signal_strength": round(abs(directional_score), 2),
         "label": label,
         "confidence": confidence,
+        "agreement": round(agreement, 6),
+        "calibration_factor": round(calibration_factor, 6),
         "coverage": round(coverage, 6),
         "components": components,
         "conflicts": conflicts,
@@ -700,8 +756,11 @@ def build_local_evidence(
         "summary": summary,
         "method": {
             "weights": base_weights,
+            "score_scale": "0-100 rating; 50 is neutral",
+            "direction_scale": "-100 bearish to +100 bullish",
             "missing_policy": "exclude and renormalize",
-            "confidence_policy": "base weight multiplied by source-specific reliability",
+            "confidence_policy": "source reliability multiplied by cross-component agreement",
+            "calibration_policy": "direction shrinks toward neutral when evidence is weak or conflicting",
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         },
     }

@@ -129,6 +129,12 @@
     return Number.isFinite(number) ? number : fallback;
   }
 
+  function formatDirection(score, digits = 0) {
+    const value = safeNumber(score);
+    if (Math.abs(value) < 0.5 * 10 ** -digits) return "中性";
+    return `${value > 0 ? "多" : "空"} ${Math.abs(value).toFixed(digits)}`;
+  }
+
   function safeExternalUrl(value) {
     try {
       const target = new URL(String(value || ""));
@@ -604,15 +610,17 @@
 
   function renderDecision(analysis) {
     if (!analysis) return;
-    const score = safeNumber(analysis.score);
-    const progress = Math.min(1, Math.abs(score) / 100);
+    const rating = Math.max(0, Math.min(100, safeNumber(analysis.score, 50)));
+    const direction = safeNumber(analysis.directional_score, (rating - 50) * 2);
+    const progress = rating / 100;
     const circumference = 314;
     const ring = byId("score-ring-value");
     ring.style.strokeDashoffset = String(circumference * (1 - progress));
-    ring.style.stroke = score > 15 ? "var(--accent)" : score < -15 ? "var(--negative)" : "var(--warning)";
-    byId("decision-score").textContent = `${score > 0 ? "+" : ""}${score.toFixed(1)}`;
+    ring.style.stroke = direction > 15 ? "var(--accent)" : direction < -15 ? "var(--negative)" : "var(--warning)";
+    byId("decision-score").textContent = rating.toFixed(1);
     byId("decision-label").textContent = analysis.action_label;
-    byId("decision-label").style.color = score > 15 ? "var(--accent)" : score < -15 ? "var(--negative)" : "var(--warning)";
+    byId("decision-label").style.color = direction > 15 ? "var(--accent)" : direction < -15 ? "var(--negative)" : "var(--warning)";
+    byId("decision-score").title = `多空方向：${formatDirection(direction, 1)}`;
     byId("decision-summary").textContent = analysis.summary;
     byId("decision-confidence").textContent = `${analysis.confidence}%`;
     byId("decision-position").textContent = formatPercent(analysis.target_position, 0);
@@ -673,7 +681,7 @@
 
       const value = document.createElement("strong");
       value.className = `factor-score ${score > 15 ? "is-positive" : score < -15 ? "is-negative" : ""}`;
-      value.textContent = available ? `${score > 0 ? "+" : ""}${score.toFixed(0)}` : "N/A";
+      value.textContent = available ? formatDirection(score) : "N/A";
       row.append(name, track, value);
       container.append(row);
     });
@@ -767,7 +775,7 @@
       action.className = score > 20 ? "is-positive" : score < -20 ? "is-negative" : "";
       action.textContent = actionLabel(strategy.action);
       const value = document.createElement("span");
-      value.textContent = `${score > 0 ? "+" : ""}${score.toFixed(1)}`;
+      value.textContent = formatDirection(score, 1);
       vote.append(action, value);
       row.append(name, track, vote);
       container.append(row);
@@ -1046,11 +1054,14 @@
     const fundamentals = payload.fundamental_assessment || {};
     const news = payload.news_assessment || {};
     const score = safeNumber(local.score, NaN);
+    const direction = safeNumber(local.directional_score, Number.isFinite(score) ? (score - 50) * 2 : 0);
     const scoreElement = byId("evidence-score");
-    scoreElement.textContent = Number.isFinite(score) ? `${score > 0 ? "+" : ""}${score.toFixed(1)}` : "--";
-    scoreElement.classList.remove("is-positive", "is-negative");
-    if (score >= 8) scoreElement.classList.add("is-positive");
-    if (score <= -8) scoreElement.classList.add("is-negative");
+    scoreElement.textContent = Number.isFinite(score) ? score.toFixed(1) : "--";
+    scoreElement.classList.remove("is-positive", "is-negative", "is-neutral");
+    if (direction >= 8) scoreElement.classList.add("is-positive");
+    if (direction <= -8) scoreElement.classList.add("is-negative");
+    if (direction > -8 && direction < 8) scoreElement.classList.add("is-neutral");
+    scoreElement.title = `多空方向：${formatDirection(direction, 1)}`;
     byId("evidence-label").textContent = local.label || "证据不足";
     byId("evidence-badge").textContent = `${local.label || "不可用"} · ${safeNumber(local.confidence).toFixed(0)}`;
     byId("evidence-confidence").textContent = `${safeNumber(local.confidence).toFixed(0)}%`;
@@ -1077,16 +1088,19 @@
       const track = document.createElement("div");
       track.className = "evidence-component-track";
       const bar = document.createElement("b");
-      const componentScore = safeNumber(component.score);
-      bar.style.width = `${Math.min(100, Math.abs(componentScore))}%`;
-      if (componentScore < 0) bar.className = "is-negative";
+      const componentScore = safeNumber(component.score, 50);
+      const componentDirection = safeNumber(component.directional_score, (componentScore - 50) * 2);
+      bar.style.width = `${Math.min(100, Math.abs(componentDirection))}%`;
+      if (componentDirection < 0) bar.className = "is-negative";
       track.append(bar);
       const value = document.createElement("strong");
       value.className = "evidence-component-value";
-      value.textContent = component.available ? `${componentScore > 0 ? "+" : ""}${componentScore.toFixed(1)}` : "--";
-      if (componentScore >= 20) value.classList.add("is-positive");
-      if (componentScore <= -20) value.classList.add("is-negative");
-      row.title = component.detail || component.label;
+      value.textContent = component.available ? componentScore.toFixed(1) : "--";
+      if (componentDirection >= 20) value.classList.add("is-positive");
+      if (componentDirection <= -20) value.classList.add("is-negative");
+      row.title = component.available
+        ? `${component.detail || component.label}\n多空方向：${formatDirection(componentDirection, 1)}`
+        : component.detail || component.label;
       row.append(name, track, value);
       componentList.append(row);
     });

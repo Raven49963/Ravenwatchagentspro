@@ -1985,6 +1985,10 @@ tr:last-child td {
   color: var(--negative) !important;
 }
 
+.is-neutral {
+  color: var(--warning) !important;
+}
+
 #raven-terminal[data-market="a-share"] .is-up {
   color: var(--negative);
 }

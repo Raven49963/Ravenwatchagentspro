@@ -23,11 +23,11 @@ import xml.etree.ElementTree as ET
 MAX_RESPONSE_BYTES = 2_000_000
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 Chrome/126.0 Safari/537.36 RavenWatchAgentsPro/1.8"
+    "AppleWebKit/537.36 Chrome/126.0 Safari/537.36 RavenWatchAgentsPro/1.9"
 )
 SEC_USER_AGENT = os.environ.get(
     "RAVENWATCHAGENTSPRO_SEC_USER_AGENT",
-    "RavenWatchAgentsPro/1.8 quant-research contact@example.com",
+    "RavenWatchAgentsPro/1.9 quant-research contact@example.com",
 ).strip()
 VERIFICATION_SOURCE_THRESHOLD = 5
 _gdelt_cache_lock = threading.RLock()

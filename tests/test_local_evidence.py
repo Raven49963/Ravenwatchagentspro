@@ -51,6 +51,11 @@ class FundamentalScoringTests(unittest.TestCase):
         self.assertEqual(result["total_metrics"], 16)
         self.assertGreater(result["coverage"], 0.5)
         self.assertGreater(result["confidence"], 60)
+        self.assertGreaterEqual(result["score"], 0)
+        self.assertLessEqual(result["score"], 100)
+        self.assertAlmostEqual(
+            result["score"], 50 + result["directional_score"] / 2, places=2
+        )
         price_to_book = next(
             metric for metric in result["metrics"] if metric["key"] == "price_to_book"
         )
@@ -210,7 +215,11 @@ class NewsAndCompositeEvidenceTests(unittest.TestCase):
             feed,
             now=datetime(2026, 7, 16, tzinfo=timezone.utc),
         )
-        self.assertGreater(result["score"], 20)
+        self.assertGreater(result["directional_score"], 20)
+        self.assertGreater(result["score"], 50)
+        self.assertAlmostEqual(
+            result["score"], 50 + result["directional_score"] / 2, places=2
+        )
         self.assertEqual(result["positive_count"], 1)
         self.assertEqual(result["negative_count"], 1)
         self.assertEqual(result["catalysts"][0]["title"], "公司获批并上调盈利预期")
@@ -233,7 +242,104 @@ class NewsAndCompositeEvidenceTests(unittest.TestCase):
         self.assertAlmostEqual(sum(item["effective_weight"] for item in available), 1.0, places=5)
         self.assertAlmostEqual(result["coverage"], 0.65)
         self.assertEqual(set(result["missing_components"]), {"基本面", "新闻事件"})
+        self.assertGreaterEqual(result["score"], 0)
+        self.assertLessEqual(result["score"], 100)
+        self.assertAlmostEqual(
+            result["score"], 50 + result["directional_score"] / 2, places=2
+        )
+        self.assertTrue(
+            all(0 <= item["score"] <= 100 for item in available)
+        )
         json.dumps(result, ensure_ascii=False, allow_nan=False)
+
+    @staticmethod
+    def _component_payloads(score: float, confidence: int = 90) -> tuple[dict, dict]:
+        fundamentals = {
+            "available": True,
+            "score": score,
+            "confidence": confidence,
+            "available_metrics": 12,
+            "total_metrics": 16,
+        }
+        news = {
+            "available": True,
+            "score": score,
+            "confidence": confidence,
+            "article_count": 8,
+            "official_ratio": 0.5,
+        }
+        return fundamentals, news
+
+    def test_bearish_evidence_uses_nonnegative_rating_and_explicit_direction(self) -> None:
+        fundamentals, news = self._component_payloads(-75)
+        result = build_local_evidence(
+            technical_score=-80,
+            technical_confidence=90,
+            quant_validation={
+                "available": True,
+                "latest_score": -0.8,
+                "robustness_score": 90,
+                "folds": [{}, {}, {}],
+                "verdict": "偏空",
+            },
+            fundamentals=fundamentals,
+            news=news,
+        )
+        self.assertGreaterEqual(result["score"], 0)
+        self.assertLess(result["score"], 50)
+        self.assertLess(result["directional_score"], 0)
+        self.assertEqual(result["signal_strength"], abs(result["directional_score"]))
+        self.assertIn("偏空", result["summary"])
+        self.assertTrue(
+            all(0 <= item["score"] <= 100 for item in result["components"])
+        )
+
+    def test_conflicting_evidence_reduces_agreement_and_confidence(self) -> None:
+        aligned_fundamentals, aligned_news = self._component_payloads(80)
+        aligned = build_local_evidence(
+            technical_score=80,
+            technical_confidence=90,
+            quant_validation={
+                "available": True,
+                "latest_score": 0.8,
+                "robustness_score": 90,
+                "folds": [{}, {}, {}],
+                "verdict": "偏多",
+            },
+            fundamentals=aligned_fundamentals,
+            news=aligned_news,
+        )
+        conflicting_fundamentals, conflicting_news = self._component_payloads(-80)
+        conflicting = build_local_evidence(
+            technical_score=80,
+            technical_confidence=90,
+            quant_validation={
+                "available": True,
+                "latest_score": -0.8,
+                "robustness_score": 90,
+                "folds": [{}, {}, {}],
+                "verdict": "分歧",
+            },
+            fundamentals=conflicting_fundamentals,
+            news=conflicting_news,
+        )
+        self.assertLess(conflicting["agreement"], aligned["agreement"])
+        self.assertLess(conflicting["confidence"], aligned["confidence"])
+        self.assertTrue(conflicting["conflicts"])
+
+    def test_weak_single_source_is_calibrated_toward_neutral(self) -> None:
+        result = build_local_evidence(
+            technical_score=80,
+            technical_confidence=10,
+            quant_validation={"available": False},
+            fundamentals={"available": False},
+            news={"available": False},
+        )
+        self.assertEqual(result["raw_directional_score"], 80)
+        self.assertLess(result["directional_score"], result["raw_directional_score"])
+        self.assertGreater(result["score"], 50)
+        self.assertLess(result["score"], 90)
+        self.assertLess(result["confidence"], 10)
 
     def test_quant_request_converts_bps_and_position_limit(self) -> None:
         config = QuantValidationRequest(

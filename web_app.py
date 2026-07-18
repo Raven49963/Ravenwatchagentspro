@@ -808,7 +808,7 @@ class MarketService:
         fundamental_assessment = assess_fundamentals(fundamentals_snapshot)
         news_assessment = assess_news(news_feed)
         local_evidence = build_local_evidence(
-            technical_score=analysis.get("score"),
+            technical_score=analysis.get("directional_score", analysis.get("score")),
             technical_confidence=analysis.get("confidence"),
             quant_validation=quant_validation,
             fundamentals=fundamental_assessment,
@@ -1074,7 +1074,7 @@ class EvidenceRequest(QuantValidationRequest):
 
 app = FastAPI(
     title="Raven Watch Agents Pro API",
-    version="1.8.0",
+    version="1.9.0",
     description="四市场实时行情、参数化样本外验证、新闻基本面与 DeepSeek V4 多智能体在线研判服务。",
 )
 
