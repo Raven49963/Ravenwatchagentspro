@@ -66,6 +66,7 @@ from quant_starter.local_evidence import (
     assess_news,
     build_local_evidence,
 )
+from quant_starter.metadata import APP_NAME, APP_VERSION
 from quant_starter.news import fetch_online_news
 from quant_starter.polymarket import assess_polymarket, fetch_polymarket_snapshot
 from quant_starter.global_market import search_msn_instruments
@@ -1159,8 +1160,8 @@ class PredictionMarketRequest(BaseModel):
 
 
 app = FastAPI(
-    title="Raven Watch Agents Pro API",
-    version="1.10.0",
+    title=f"{APP_NAME} API",
+    version=APP_VERSION,
     description="四市场实时行情、预测市场证据、参数化样本外验证、新闻基本面与 DeepSeek V4 多智能体在线研判服务。",
 )
 
@@ -1198,7 +1199,7 @@ async def value_error_handler(_request: Request, exc: ValueError) -> JSONRespons
 def health() -> dict[str, Any]:
     return {
         "status": "ok",
-        "service": "Raven Watch Agents Pro",
+        "service": APP_NAME,
         "version": app.version,
         "markets": ["a-share", "nasdaq", "hk", "global"],
         "realtime": True,
@@ -1376,7 +1377,7 @@ async def test_research_provider(
     try:
         response = await asyncio.to_thread(
             client.complete,
-            "你是 Raven Watch Agents Pro 的模型连接诊断器。",
+            f"你是 {APP_NAME} 的模型连接诊断器。",
             "仅回复 CONNECTED，不要添加其他内容。",
         )
     except LLMRequestError as exc:
@@ -1747,7 +1748,7 @@ def index() -> FileResponse:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Raven Watch Agents Pro Web Server")
+    parser = argparse.ArgumentParser(description=f"{APP_NAME} Web Server")
     parser.add_argument("--host", default=os.getenv("HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.getenv("PORT", "8765")))
     parser.add_argument("--reload", action="store_true")

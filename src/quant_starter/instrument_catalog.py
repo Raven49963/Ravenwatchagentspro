@@ -22,6 +22,7 @@ from urllib import parse as urlparse
 from urllib import request as urlrequest
 
 from .data import normalize_hk_symbol
+from .metadata import PRODUCT_USER_AGENT
 from .symbols import presets_for_source
 
 
@@ -31,7 +32,7 @@ CATALOG_STALE_SECONDS = 14 * 24 * 60 * 60
 CATALOG_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36 "
-    "RavenWatchAgentsPro/1.10"
+    f"{PRODUCT_USER_AGENT}"
 )
 CATALOG_RESOURCE = Path(__file__).with_name("resources") / "instrument_catalog.json.gz"
 

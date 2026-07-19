@@ -16,9 +16,7 @@ from urllib.request import urlopen
 import uvicorn
 
 from web_app import app
-
-
-APP_NAME = "RavenWatchAgentsPro"
+from quant_starter.metadata import APP_NAME, PRODUCT_ID
 
 
 def _resource_path(relative_path: str) -> Path:
@@ -28,7 +26,7 @@ def _resource_path(relative_path: str) -> Path:
 
 def _runtime_dir() -> Path:
     base = Path(os.getenv("LOCALAPPDATA", Path.home()))
-    path = base / APP_NAME
+    path = base / PRODUCT_ID
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -101,7 +99,7 @@ class DesktopServer:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Raven Watch Agents Pro Desktop")
+    parser = argparse.ArgumentParser(description=f"{APP_NAME} Desktop")
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--smoke-test", action="store_true")
     parser.add_argument("--window-smoke-test", action="store_true")
@@ -167,7 +165,7 @@ def main() -> None:
         storage_path.mkdir(parents=True, exist_ok=True)
         url = f"{server.base_url}/?desktop_token={quote(token)}"
         window = webview.create_window(
-            "Raven Watch Agents Pro 研投终端",
+            f"{APP_NAME} 研投终端",
             url=url,
             width=1440,
             height=940,

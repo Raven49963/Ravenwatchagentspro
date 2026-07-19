@@ -11,6 +11,7 @@ from typing import Any, Callable
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from .metadata import PRODUCT_USER_AGENT
 from .numeric import clamp, finite_float
 from .scoring import (
     DirectionBand,
@@ -28,7 +29,7 @@ POLYMARKET_CACHE_SCHEMA = 1
 MAX_RESPONSE_BYTES = 3_000_000
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 Chrome/126.0 Safari/537.36 RavenWatchAgentsPro/1.10"
+    f"AppleWebKit/537.36 Chrome/126.0 Safari/537.36 {PRODUCT_USER_AGENT}"
 )
 
 

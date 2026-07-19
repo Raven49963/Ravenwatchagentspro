@@ -8,6 +8,8 @@ from typing import Any
 from urllib import error, parse, request
 import uuid
 
+from .metadata import PRODUCT_USER_AGENT
+
 
 class LLMRequestError(RuntimeError):
     """Raised when an OpenAI-compatible request cannot be completed."""
@@ -154,7 +156,7 @@ class OpenAICompatibleClient:
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "RavenWatchAgentsPro/1.10",
+            "User-Agent": PRODUCT_USER_AGENT,
             "X-Client-Request-Id": str(uuid.uuid4()),
         }
         if self.settings.api_key.strip():
